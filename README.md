@@ -79,6 +79,7 @@ of whatever window is focused.
 | Key | Action |
 |---|---|
 | `Ctrl+Alt+G` | Switch **chat mode** (accurate) ↔ **game mode** (fast callouts) |
+| `Ctrl+Alt+L` | Cycle language pin (e.g. Korean) ↔ auto-detect — for when a non-Korean friend joins |
 | `Ctrl+Alt+P` | Pause / resume translating |
 | `Ctrl+Alt+O` | Show / hide the overlay |
 | `Ctrl+Alt+I` | Interaction mode (lets you click the overlay; off = click-through) |

@@ -126,6 +126,7 @@ DEFAULTS = {
             "toggle": "ctrl+alt+o",
             "interact": "ctrl+alt+i",   # toggle click-through so the tray/menu is reachable
             "mode": "ctrl+alt+g",       # switch chat <-> game mode
+            "language": "ctrl+alt+l",   # cycle pinned language <-> auto-detect
             "quit": "ctrl+alt+q",
         },
     },
@@ -149,6 +150,18 @@ def apply_profile(cfg: dict) -> dict:
         cfg["beam_size"] = prof["beam_size"]
     _deep_update(cfg["vad"], prof.get("vad", {}))
     return cfg
+
+
+def persist_key(key: str, value) -> None:
+    """Best-effort: save one setting to config.json so it survives restarts."""
+    try:
+        import json
+        path = CONFIG_PATH
+        data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        data[key] = value
+        path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    except Exception as e:
+        print(f"[config] Could not persist {key}: {e}")
 
 
 def create_default_config(path: Path = CONFIG_PATH) -> None:

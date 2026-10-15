@@ -292,9 +292,26 @@ def run_live(cfg, no_overlay: bool):
                   f"(silence {cfg['vad']['min_silence_ms']}ms, beam {cfg['beam_size']})")
             service.win.flash(f"{cfg['profile'].upper()} MODE")
 
-        service = OverlayService(result_q, cfg, paused, on_mode=toggle_profile)
+        startup_lang = cfg.get("language") or "ko"
+
+        def toggle_language():
+            if cfg.get("language"):
+                cfg["language"] = None
+                worker._pinned_lang = None       # resume auto-detection cleanly
+                worker._lang_hist.clear()
+                label = "AUTO"
+            else:
+                cfg["language"] = startup_lang
+                label = startup_lang.upper()
+            from config import persist_key
+            persist_key("language", cfg["language"])
+            print(f"[lang] {label}")
+            service.win.flash(f"LANGUAGE: {label}")
+
+        service = OverlayService(result_q, cfg, paused,
+                                 on_mode=toggle_profile, on_language=toggle_language)
         print(f"[init] Overlay running ({cfg.get('profile', 'chat')} mode, "
-              f"Ctrl+Alt+G to switch). Hotkeys: "
+              f"language {cfg.get('language') or 'auto'}, Ctrl+Alt+G/L to switch). Hotkeys: "
               + " | ".join(f"{k}={v}" for k, v in
                            cfg["overlay"]["hotkeys"].items()))
     else:

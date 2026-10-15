@@ -290,13 +290,14 @@ class OverlayService(QObject):
     """Owns the overlay window, tray icon, hotkeys, and the results queue."""
 
     def __init__(self, result_q, cfg: dict, paused_event, parent=None,
-                 on_result=None, on_mode=None):
+                 on_result=None, on_mode=None, on_language=None):
         super().__init__(parent)
         self.cfg = cfg
         self.result_q = result_q
         self.paused_event = paused_event
         self.on_result = on_result
         self.on_mode = on_mode
+        self.on_language = on_language
         oc = cfg["overlay"]
 
         self.win = OverlayWindow(oc)
@@ -390,6 +391,8 @@ class OverlayService(QObject):
         elif name == "mode" and self.on_mode:
             self.on_mode()
             self._sync_mode_actions()
+        elif name == "language" and self.on_language:
+            self.on_language()
         elif name == "quit":
             self.quit()
 
