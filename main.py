@@ -16,6 +16,8 @@ import time
 from collections import deque
 from pathlib import Path
 
+import numpy as np  # noqa: E402  (used by the debug audio dumper)
+
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
@@ -111,8 +113,8 @@ class PipelineWorker(threading.Thread):
         return self._pinned_lang
 
     def _record_detection(self, lang: str, prob: float):
-        if self.cfg.get("language"):
-            return
+        if self.cfg.get("language") or self.cfg.get("translate_only"):
+            return  # pinned or filter mode: no voting
         if self._pinned_lang is None:
             self._lang_hist.append((lang, prob, 1.0))
             locked = self._vote_language()
@@ -167,7 +169,11 @@ class PipelineWorker(threading.Thread):
 
             t0 = time.time()
             dur = len(seg) / TARGET_RATE
-            lang_arg = self._next_language()
+            # with translate_only, language ID must stay per-utterance: the voter
+            # can lock onto the majority language and then Korean gets decoded
+            # as (say) English and dropped by the filter — the reported bug
+            only = self.cfg.get("translate_only")
+            lang_arg = None if only else self._next_language()
             prompt = (self.cfg.get("initial_prompts") or {}).get(lang_arg) \
                 if lang_arg else None
             prof = self.cfg.get("profiles", {}).get(self.cfg.get("profile", "chat"), {})
@@ -184,13 +190,20 @@ class PipelineWorker(threading.Thread):
             detected = info.language or "?"
             self._record_detection(detected,
                                    getattr(info, "language_probability", 0.0))
+            if self.cfg.get("debug_save_audio"):
+                self._dump_audio(seg, uid, partial, detected)
             only = self.cfg.get("translate_only")
             if only and detected != only:
-                self._n_filtered += 1
-                if self._n_filtered == 1 or self._n_filtered % 20 == 0:
-                    print(f"[worker] translate_only={only}: dropped "
-                          f"{self._n_filtered} non-{only} utterance(s) (last: {detected})")
-                continue
+                prob = getattr(info, "language_probability", 0.0)
+                # drop only confidently-foreign utterances; borderline detections
+                # pass through — losing real Korean is worse than an extra line
+                if prob >= float(self.cfg.get("translate_only_min_prob", 0.55)):
+                    self._n_filtered += 1
+                    if self._n_filtered == 1 or self._n_filtered % 20 == 0:
+                        print(f"[worker] translate_only={only}: dropped "
+                              f"{self._n_filtered} non-{only} utterance(s) "
+                              f"(last: {detected} @ {prob:.2f})")
+                    continue
             if not is_acceptable(text, info, dur, int(self.cfg["min_text_len"])):
                 continue
 
@@ -255,6 +268,21 @@ class PipelineWorker(threading.Thread):
             # drop every remaining version of this uid: superseded
             pending[:] = [p for p in pending if p.get("uid") != item["uid"]]
         return item
+
+    def _dump_audio(self, seg, uid, partial, detected: str):
+        """Save what the app actually hears — for diagnosing capture problems."""
+        import wave
+        d = APP_DIR / "debug_audio"
+        d.mkdir(exist_ok=True)
+        name = f"{time.strftime('%H%M%S')}_u{uid}{'p' if partial else ''}_{detected}.wav"
+        try:
+            with wave.open(str(d / name), "wb") as w:
+                w.setnchannels(1)
+                w.setsampwidth(2)
+                w.setframerate(TARGET_RATE)
+                w.writeframes((np.clip(seg, -1, 1) * 32767).astype(np.int16).tobytes())
+        except Exception as e:
+            print(f"[worker] audio dump failed: {e}")
 
     def stop(self):
         self.stop_event.set()

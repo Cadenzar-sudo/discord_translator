@@ -12,3 +12,4 @@ bench_cache/
 *.mp4
 *.log
 *.png
+debug_audio/

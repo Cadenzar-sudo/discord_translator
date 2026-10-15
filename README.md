@@ -170,8 +170,23 @@ VRAM budget: `large-v3-turbo` ≈ 1.5 GB + NLLB 1.3B int8 ≈ 1.5 GB — both fi
   kind can draw over them. Set the game to *Borderless Windowed /
   Fullscreen Windowed* (negligible FPS cost) and the overlay appears.
 - **Slow translations while gaming** — Whisper shares the GPU with the game and
-  decode times can triple mid-match. Use game mode (`Ctrl+Alt+G`); if still
-  slow, try `"whisper_model": "medium"` in config.json.
+  decode times can triple (or worse) mid-match. Use game mode (`Ctrl+Alt+G`);
+  if still slow, try `"whisper_model": "medium"` in config.json.
+- **Missing words when `translate_only` is on** — the filter needs honest
+  per-utterance language detection, so language voting is disabled in that mode
+  (an older version let the voter lock onto the majority language and then
+  mis-decode the minority's speech — e.g. Korean decoded as English, then
+  dropped). Drops are also confidence-gated (`translate_only_min_prob`),
+  so borderline detections pass through instead of losing real Korean.
+- **Phrases that don't make sense** — three sources, in order of likelihood:
+  1. Lines still showing a trailing `…` are provisional streaming partials —
+     they finish a second later.
+  2. NLLB translates gaming slang literally. Add phrases to
+     `callout_glossary`, or swap in the bigger translator
+     (`nllb_ct2_repo`: `JustFrederik/nllb-200-3.3B-ct2-float16`, ~6.5GB
+     download, needs the GPU headroom).
+  3. Garbled audio: set `"debug_save_audio": true` and check `debug_audio/`
+     to hear exactly what the transcriber receives (cable levels, mic bleed).
 - **Wrong language detected** — Whisper detects per utterance; short phrases can
   misdetect. Say a full sentence and it locks on.
 - **One stream, not per-person** — everyone in a voice channel arrives mixed
