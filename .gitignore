@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+venv/
+.venv/
+models/
+config.json
+bench_cache/
+.zcode/
+*.wav
+*.mp3
+*.flac
+*.mp4
+*.log
+*.png
