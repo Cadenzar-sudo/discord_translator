@@ -9,6 +9,14 @@ from config import MODEL_DIR
 _CJK_RE = re.compile(r"[\uac00-\ud7af\u3040-\u30ff\u4e00-\u9fff]")
 
 
+def apply_names(text: str, names: dict) -> str:
+    """Replace known hero/player names with their English spellings (used before
+    neural translation so 트레이서 doesn't become 'tractor' mid-sentence)."""
+    for src, dst in (names or {}).items():
+        text = text.replace(src, dst)
+    return text
+
+
 def apply_glossary(text: str, rules: dict) -> str | None:
     """Deterministic callout translation: hero-name mapping + slang patterns.
     Returns English if the whole segment is covered by the rules, else None

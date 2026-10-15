@@ -127,6 +127,8 @@ venv\Scripts\python main.py --engine whisper
 | `device` / `compute_type` | `auto` | auto-detects CUDA + best precision (GTX 10xx → `int8_float32`; RTX → `float16`) |
 | `nllb_ct2_repo` / `nllb_tokenizer_repo` | `...1.3B-ct2-int8` | swap to `JustFrederik/nllb-200-distilled-600M-ct2-int8` for a smaller/faster model |
 | `target_lang` | `"eng_Latn"` | any NLLB-200 code, e.g. `deu_Latn` (engine=`nllb` only) |
+| `language` | `null` | pin Whisper language, e.g. `"ko"`; `Ctrl+Alt+L` cycles pin ↔ auto at runtime |
+| `translate_only` | `null` | e.g. `"ko"`: translate only that language, drop everyone else's chatter (uses auto-detection; a matching language pin is ignored for the session) |
 | `vad.*` | — | utterance segmentation tuning |
 | `overlay.*` | — | size, timeout, hotkeys. `anchor` (`"screen"` bottom of active monitor, or `"window"` bottom of the focused window), `max_lines` (3), `max_height_frac` (0.18) cap screen coverage |
 

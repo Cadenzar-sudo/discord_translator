@@ -88,6 +88,7 @@ class PipelineWorker(threading.Thread):
         self._lang_hist: deque = deque(maxlen=12)
         self._pinned_lang: str | None = None
         self._detect_counter = 0
+        self._n_filtered = 0
 
     def _vote_language(self) -> str | None:
         """Dominant recent language (weighted by duration x confidence), or None."""
@@ -147,7 +148,7 @@ class PipelineWorker(threading.Thread):
 
     def run(self):
         from transcriber import is_acceptable
-        from translator import apply_glossary, whisper_to_nllb
+        from translator import apply_glossary, apply_names, whisper_to_nllb
 
         pending: list[dict] = []
         while not self.stop_event.is_set():
@@ -183,6 +184,13 @@ class PipelineWorker(threading.Thread):
             detected = info.language or "?"
             self._record_detection(detected,
                                    getattr(info, "language_probability", 0.0))
+            only = self.cfg.get("translate_only")
+            if only and detected != only:
+                self._n_filtered += 1
+                if self._n_filtered == 1 or self._n_filtered % 20 == 0:
+                    print(f"[worker] translate_only={only}: dropped "
+                          f"{self._n_filtered} non-{only} utterance(s) (last: {detected})")
+                continue
             if not is_acceptable(text, info, dur, int(self.cfg["min_text_len"])):
                 continue
 
@@ -203,8 +211,10 @@ class PipelineWorker(threading.Thread):
                     if glossed and all(g is not None for g in glossed):
                         translated = " ".join(g for g in glossed if g)  # pure callout: no NLLB hop
                     else:
+                        names = (rules or {}).get("names")
+                        mt_texts = [apply_names(s, names) for s in seg_texts] if names else seg_texts
                         try:
-                            translated = self.translator.translate(seg_texts, src)
+                            translated = self.translator.translate(mt_texts, src)
                         except Exception as e:
                             print(f"[worker] Translation error: {e}")
                             continue
@@ -302,7 +312,11 @@ def run_live(cfg, no_overlay: bool):
                 label = "AUTO"
             else:
                 cfg["language"] = startup_lang
-                label = startup_lang.upper()
+                if cfg.get("translate_only") == startup_lang:
+                    cfg["language"] = None  # pinning would blind the filter
+                    label = f"AUTO ({startup_lang.upper()}-ONLY)"
+                else:
+                    label = startup_lang.upper()
             from config import persist_key
             persist_key("language", cfg["language"])
             print(f"[lang] {label}")
@@ -444,6 +458,13 @@ def main():
     }
     cfg = load_config({k: v for k, v in overrides.items() if v is not None})
     apply_profile(cfg)
+
+    # A language pin forces Whisper to decode EVERYTHING as that language, so
+    # translate_only could never see anything else — drop the pin at runtime.
+    if cfg.get("translate_only") and cfg.get("language") == cfg["translate_only"]:
+        print(f"[init] translate_only={cfg['translate_only']} needs auto-detection; "
+              f"ignoring the language pin for this session")
+        cfg["language"] = None
 
     if args.list_devices:
         run_list_devices()

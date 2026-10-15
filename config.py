@@ -17,6 +17,7 @@ DEFAULTS = {
     # --- models ---
     "whisper_model": "large-v3-turbo",  # faster-whisper model name or local path
     "language": None,                   # pin Whisper language, e.g. "ko"; null = auto-detect with voting
+    "translate_only": None,             # e.g. "ko": drop utterances in other languages (needs auto-detect)
     "device": "auto",                   # auto | cuda | cpu
     "compute_type": "auto",             # auto | float16 | int8_float16 | int8
     "cpu_threads": 4,
