@@ -63,6 +63,25 @@ then reboot.
 Now Discord's audio flows into the cable, and Windows echoes it back to your
 headphones. The app records the cable directly.
 
+### 3b. Alternative: capture Overwatch in-game voice instead of Discord
+
+The app records whatever the cable carries, so game voice chat works the same way:
+
+1. **Overwatch 2 → Options → Sound → Voice Chat** → set **Voice Chat Output
+   Device** to **CABLE Input (VB-Audio Virtual Cable)**. Only voice chat audio
+   goes to the cable — game SFX/music do not, so they never pollute the
+   transcription.
+2. Join **Team Voice Chat** in game (open mic on your friends' side lets casual
+   chat flow; push-to-talk silences are just silence).
+3. Keep the **"Listen to this device"** echo from step 3 above so you still
+   hear them.
+4. You can point **both** Discord and Overwatch at CABLE Input — they mix into
+   one stream and both get translated (use `translate_only` to gate language).
+   Point Discord back at your headphones if you only want game voice.
+
+For casual conversation use **chat mode** (default); game mode is tuned for
+short callouts.
+
 ### 4. Run it
 
 ```bat
