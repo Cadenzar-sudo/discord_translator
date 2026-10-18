@@ -26,3 +26,7 @@ sidecar/package-lock.json.bak
 
 # cloudflared tunnel token (written by start_tunnel.bat)
 .env
+
+# local secrets never leave this machine
+.env
+server/setup.txt

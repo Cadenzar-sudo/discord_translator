@@ -12,7 +12,6 @@ overlay shows a small "reconnecting…" banner while the server is unreachable.
 
 import argparse
 import asyncio
-import faulthandler  # startup-hang diagnosis: dumps all thread stacks
 import json
 import os
 import queue
@@ -36,10 +35,6 @@ else:
         _s = getattr(sys, _name)
         if _s is not None and hasattr(_s, "reconfigure"):
             _s.reconfigure(encoding="utf-8", errors="replace")
-
-# if the client is stuck 30s after start, dump every thread's stack ONCE to
-# the log — a healthy client is quiet after this
-faulthandler.dump_traceback_later(30, repeat=False, file=sys.stderr)
 
 # In a PyInstaller onefile exe, __file__ lives in the temp extraction dir —
 # keep everything persistent next to the exe itself.
