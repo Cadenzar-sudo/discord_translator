@@ -5,12 +5,17 @@ The pipeline thread hands subtitle events to thread_emit(); they are routed to
 each connection by that viewer's target language (everything else — status,
 welcome, pong — goes to all). Slow consumers drop messages rather than stall
 the pipeline: subtitles are ephemeral.
+
+In source="ws" mode the same port also serves /audio: an audio shipper (the
+Node voice-bot sidecar with per-speaker DAVE audio, or the Windows VB-Cable
+audio_shipper.py) streams framed PCM blocks into the SpeakerManager.
 """
 
 import asyncio
 import itertools
 import time
 
+import numpy as np
 from aiohttp import web, WSMsgType
 
 from translator import WHISPER_TO_NLLB
@@ -20,12 +25,16 @@ VALID_TARGETS = set(WHISPER_TO_NLLB.values())
 
 class SubtitleServer:
     def __init__(self, cfg: dict, registry, status_provider, on_set_mode=None,
-                 on_set_language=None):
+                 on_set_language=None, audio_sink=None):
         self.cfg = cfg
         self.registry = registry
         self.status_provider = status_provider  # callable() -> dict
         self.on_set_mode = on_set_mode  # callable(profile: str) -> None
         self.on_set_language = on_set_language  # callable(lang: str|None) -> None
+        # audio_sink: push(uid, name, float32 block) + disconnect(uids), or None
+        self.audio_sink = audio_sink
+        self.audio_client: str | None = None  # label of the connected shipper
+        self._audio_ws: web.WebSocketResponse | None = None
         self._conns: dict[int, dict] = {}
         self._ids = itertools.count(1)
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -38,6 +47,8 @@ class SubtitleServer:
         app = web.Application()
         app.router.add_get("/ws", self._ws_handler)
         app.router.add_get("/health", self._health)
+        if self.audio_sink is not None:
+            app.router.add_get("/audio", self._audio_handler)
         self._runner = web.AppRunner(app)
         await self._runner.setup()
         site = web.TCPSite(self._runner, self.cfg["server"]["host"],
@@ -47,6 +58,9 @@ class SubtitleServer:
         host = self.cfg["server"]["host"]
         print(f"[server] Subtitles on ws://{host}:{self.cfg['server']['port']}/ws "
               f"(auth {'ON' if self.cfg['server']['access_token'] else 'OFF — set a token!'})")
+        if self.audio_sink is not None:
+            print(f"[server] Audio shipper endpoint on "
+                  f"ws://{host}:{self.cfg['server']['port']}/audio")
 
     async def stop(self):
         if self._status_task:
@@ -95,6 +109,78 @@ class SubtitleServer:
     # ------------------------------------------------------------ handlers
     async def _health(self, request):
         return web.json_response(self.safe_status())
+
+    async def _audio_handler(self, request):
+        """Audio shipper in: hello JSON, then BINARY frames
+        [2B name-len][utf8 name][float32-LE mono 16 kHz samples]. One
+        shipper at a time — a new connection replaces the old."""
+        if not self._authorized(request):
+            raise web.HTTPUnauthorized(text="bad or missing token")
+        ws = web.WebSocketResponse(heartbeat=25.0)
+        await ws.prepare(request)
+
+        if self._audio_ws is not None and not self._audio_ws.closed:
+            print("[audio] replacing existing shipper connection")
+            await self._audio_ws.close(code=4001, message=b"replaced")
+        self._audio_ws = ws
+
+        try:
+            hello = await asyncio.wait_for(ws.receive_json(), timeout=10.0)
+        except Exception:
+            await ws.close(code=4002, message=b"expected hello")
+            if self._audio_ws is ws:
+                self._audio_ws = None
+            return ws
+        client = str(hello.get("client") or "shipper")
+        speaker = str(hello.get("speaker")
+                      or self.cfg.get("speaker_name") or "Discord")
+        self.audio_client = client
+        await ws.send_json({"type": "welcome", "client": client,
+                            "speaker": speaker})
+        print(f"[audio] shipper connected: {client} (default speaker "
+              f"'{speaker}')")
+
+        uids: set[str] = set()
+        bad = 0
+        try:
+            async for msg in ws:
+                if msg.type != WSMsgType.BINARY:
+                    continue
+                frame = self._parse_audio_frame(msg.data)
+                if frame is None:
+                    bad += 1
+                    if bad == 1:
+                        print("[audio] malformed frame — dropping (further "
+                              "frame errors stay silent)")
+                    continue
+                name, block = frame
+                uids.add(name)
+                self.audio_sink.push(name, name, block)
+        finally:
+            if self._audio_ws is ws:
+                self._audio_ws = None
+                self.audio_client = None
+            try:
+                self.audio_sink.disconnect(uids)
+            except Exception as e:
+                print(f"[audio] sink flush failed: {e}")
+            print(f"[audio] shipper disconnected ({client}); flushed "
+                  f"{len(uids)} speaker session(s)")
+        return ws
+
+    @staticmethod
+    def _parse_audio_frame(data: bytes):
+        if len(data) < 3:
+            return None
+        name_len = int.from_bytes(data[:2], "little")
+        if name_len > 128 or len(data) < 2 + name_len:
+            return None
+        samples = data[2 + name_len:]
+        if not samples or len(samples) % 4:
+            return None
+        name = data[2:2 + name_len].decode("utf-8", "replace")
+        # writable copy: frombuffer's array is read-only
+        return name, np.frombuffer(samples, dtype="<f4").astype(np.float32)
 
     def _authorized(self, request) -> bool:
         """App-token check. The token normally arrives as an Authorization:

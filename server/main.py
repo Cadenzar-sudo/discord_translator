@@ -32,8 +32,11 @@ def add_cuda_dll_dirs():
     """Expose cuBLAS/cuDNN DLLs installed via pip (nvidia-*-cu12) to CTranslate2.
 
     os.add_dll_directory() alone is not enough: CTranslate2 loads cuBLAS with a
-    plain LoadLibrary, which only consults PATH — so do both.
+    plain LoadLibrary, which only consults PATH — so do both. Windows-only:
+    Linux containers get CUDA libs from pip wheels via LD_LIBRARY_PATH.
     """
+    if sys.platform != "win32":
+        return
     for pkg, sub in (("nvidia.cublas", "bin"), ("nvidia.cudnn", "bin")):
         try:
             spec = importlib.util.find_spec(pkg)
@@ -124,18 +127,38 @@ async def feed_test_file(cfg, manager, worker, path: str, speaker: str,
     await asyncio.sleep(1.5)
 
 
+class ShipperSink:
+    """Bridges /audio shipper frames to the SpeakerManager. The server tracks
+    which speaker uids each shipper connection created and calls disconnect()
+    with them when the connection drops, so a vanished shipper flushes exactly
+    its own per-speaker VAD sessions."""
+
+    def __init__(self, manager, default_speaker: str):
+        self.manager = manager
+        self.default_speaker = default_speaker
+
+    def push(self, uid, name: str, block):
+        self.manager.push(uid, name, block)
+
+    def disconnect(self, uids):
+        for uid in uids:
+            self.manager.remove(uid, flush=True)
+
+
 async def amain(cfg, args):
     from pipeline import PipelineWorker, TargetRegistry
     from speakers import SpeakerManager
     from sub_server import SubtitleServer
 
     loopback = cfg.get("source", "loopback") == "loopback" and not args.test_file
+    ws_mode = cfg.get("source") == "ws" and not args.test_file
     token = cfg["discord"]["token"]
-    if not loopback and not token and not args.test_file:
+    if not loopback and not ws_mode and not token and not args.test_file:
         print("[init] No bot token configured. Run setup.bat (or put a token "
               "in config.json under discord.token), use --test-file for "
-              "offline testing, or set source=loopback to capture a normal "
-              "Discord client via VB-Cable.")
+              "offline testing, set source=ws to receive audio from a remote "
+              "shipper, or set source=loopback to capture a normal Discord "
+              "client via VB-Cable.")
         raise SystemExit(2)
 
     add_cuda_dll_dirs()
@@ -155,6 +178,7 @@ async def amain(cfg, args):
                 "language": cfg.get("language"),
                 "speakers": manager.names(),
                 "viewer_count": registry.viewer_count(),
+                "audio": server.audio_client,
                 "model": cfg.get("whisper_model"), "device": device,
                 "compute_type": compute, "ready": state["ready"], "uptime_s": 0}
 
@@ -173,7 +197,10 @@ async def amain(cfg, args):
         print(f"[lang] pinned language: {lang or 'AUTO'}")
 
     server = SubtitleServer(cfg, registry, status_provider,
-                            on_set_mode=set_mode, on_set_language=set_language)
+                            on_set_mode=set_mode, on_set_language=set_language,
+                            audio_sink=ShipperSink(
+                                manager, cfg.get("speaker_name", "Discord"))
+                            if ws_mode else None)
     await server.start()
 
     worker = PipelineWorker(cfg, seg_q, registry, server.thread_emit)
@@ -182,7 +209,11 @@ async def amain(cfg, args):
     state["ready"] = True
 
     capture = None
-    if loopback:
+    if ws_mode:
+        print("[init] Waiting for an audio shipper on /audio (voice-bot "
+              "sidecar with per-speaker DAVE audio, or audio_shipper.py "
+              "streaming the VB-Cable fallback)")
+    elif loopback:
         # VB-Cable loopback: the whole voice channel as one mixed stream,
         # labelled with a single synthetic speaker
         from audio_capture import AudioCapture
@@ -323,5 +354,17 @@ def main():
         pass
 
 
+def _install_sigterm():
+    """Containers stop with SIGTERM: turn it into the KeyboardInterrupt path
+    so amain's cleanup (workers, server) actually runs."""
+    import signal
+
+    def _on_sigterm(signum, frame):
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, _on_sigterm)
+
+
 if __name__ == "__main__":
+    _install_sigterm()
     main()

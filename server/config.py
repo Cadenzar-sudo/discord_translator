@@ -2,16 +2,23 @@
 
 import copy
 import json
+import os
 from pathlib import Path
 
 APP_DIR = Path(__file__).resolve().parent
-CONFIG_PATH = APP_DIR / "config.json"
+# TRANSLATOR_CONFIG lets containers keep config.json on a mounted volume
+CONFIG_PATH = Path(os.environ.get("TRANSLATOR_CONFIG")
+                   or APP_DIR / "config.json")
 
 DEFAULTS = {
     # --- audio source ---
     # "loopback": capture a normal Discord client's output via VB-Cable on
     #   this PC (works with Discord's DAVE end-to-end encryption; no bot; the
     #   whole channel arrives as ONE mixed stream, so no per-speaker labels).
+    # "ws": headless mode for containers — a remote audio shipper streams PCM
+    #   to the /audio endpoint of the subtitle server. Two shippers exist:
+    #   the Node voice-bot sidecar (per-speaker DAVE audio, primary) and
+    #   audio_shipper.py on Windows (VB-Cable mixed stream, fallback).
     # "bot": a py-cord bot joins the channel and receives per-user audio.
     #   Broken while py-cord's DAVE voice receive is unfinished (#3139) —
     #   kept for when that ships.
@@ -45,6 +52,15 @@ DEFAULTS = {
         # Public wss:// URL friends connect to, e.g. "subs.example.com".
         # Used by setup.bat to print the one-line client setup code.
         "public_host": "",
+    },
+    # --- audio shipper endpoint (source = "ws") ---
+    # Where an audio shipper connects: the Node voice-bot sidecar (primary,
+    # per-speaker DAVE audio) or Windows audio_shipper.py (VB-Cable fallback).
+    # Empty = same host as this config points at itself
+    # (ws://127.0.0.1:{server.port}/audio); the Docker config copy sets
+    # ws://server:8765/audio for the compose service name.
+    "audio_shipper": {
+        "url": "",
     },
     # --- cloudflare zero trust (optional, strongly recommended for tunnels) ---
     # The server itself NEVER checks these — Access blocks unauthenticated
