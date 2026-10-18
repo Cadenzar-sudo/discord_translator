@@ -1,26 +1,28 @@
-# Discord Bot Translator
+# Discord Translator (v2)
 
-Real-time voice-translation subtitles for your whole Discord voice channel,
-split across two machines so nobody's gaming GPU pays for it:
+Real-time voice-translation subtitles for your whole Discord voice channel.
+Runs fully containerized (Docker) so the "server" can live on any machine —
+a spare PC, a GPU box, or a VPS — while players only run a tiny overlay:
 
 ```
 Discord voice channel (everyone speaks normally)
-        │  per-user audio streams
+        │  per-user audio (DAVE end-to-end encrypted)
         ▼
 ┌─────────────────────────────────────────────────────┐
-│  SERVER  (any Windows PC with an NVIDIA GPU)        │
-│  Discord bot joins the voice channel (/join),       │
-│  transcribes each speaker (faster-whisper),         │
-│  translates per viewer (NLLB-200),                  │
-│  pushes subtitles over a token-authed WebSocket     │
+│  SERVER  (any machine that runs Docker; GPU optional)│
+│  voice-bot sidecar joins the voice channel,          │
+│  decrypts + transcribes each speaker                 │
+│  (Groq / Azure Speech / local faster-whisper),       │
+│  translates per viewer (Azure / NLLB-200),           │
+│  pushes subtitles over a token-authed WebSocket      │
 └─────────────────────────────────────────────────────┘
         │  wss:// via Cloudflare Tunnel (or LAN)
         ▼
 ┌─────────────────────────────────────────────────────┐
 │  CLIENT  (each player's PC — no GPU, no Python*)    │
-│  the same click-through bottom overlay as before,   │
-│  with speaker names. Each viewer picks their        │
-│  language: Korean friends get EN→KO, you get KO→EN. │
+│  click-through bottom overlay with speaker names.   │
+│  Each viewer picks their own subtitle language:     │
+│  every line is translated per viewer.               │
 └─────────────────────────────────────────────────────┘
    * friends just run a single TranslatorOverlay.exe
 ```
@@ -57,8 +59,9 @@ fallback.
    unchanged — `setup.bat` remains the only token setup you ever do.
    The sidecar also reads `discord_web.channel_id` + `auto_join`
    (boot-time join + 15 s watchdog) and `server.access_token`.
-2. Models: if `server\models` is missing, `start_bot.bat` reuses
-   `D:\discord-translator-bot\server\models` automatically; on a fresh
+2. Models: if `server\models` is missing, `start_bot.bat` reuses any
+   existing models folder it can find automatically (override with the
+   `TRANSLATOR_MODELS` environment variable); on a fresh
    machine the container downloads ~3.3 GB from HuggingFace on first start.
 3. `start_bot.bat` — builds + starts both containers, waits for
    <http://localhost:8765/health>. Bot health: <http://localhost:8766/>.
@@ -72,7 +75,7 @@ bot works (scopes `bot` + `applications.commands`, perms `View Channel` +
 `Connect`; the console prints the URL on login). One rule: the bot must
 never be deafened — a deafened bot receives no audio (it won't self-deafen).
 
-### Moving it to another PC (e.g. the RTX 3050 4 GB box)
+### Moving it to another PC (e.g. a mid-range GPU box with 4 GB VRAM)
 
 Everything ships with the repo; the machine needs Docker Desktop (+ WSL2 and
 an NVIDIA driver for the GPU variant — or nothing special for CPU).
@@ -157,7 +160,7 @@ time — it is idempotent.
 
 ### Exposing it to friends over the internet (Cloudflare Tunnel)
 
-You have a Cloudflare account + domain. On the laptop:
+You need a Cloudflare account + domain. On the server machine:
 
 ```bat
 winget install Cloudflare.cloudflared
@@ -202,7 +205,7 @@ hostname, add Zero Trust below.
 
 Cloudflare Access sits **in front of** the tunnel: every request without a
 valid service token is rejected at Cloudflare's edge, before it ever
-reaches your laptop. Free for personal use, ~10 minutes to set up:
+reaches the server. Free for personal use, ~10 minutes to set up:
 
 1. **Zero Trust dashboard**: <https://one.dash.cloudflare.com> (pick the
    free plan on first visit).
@@ -288,7 +291,7 @@ accuracy as *comparative* (A vs B), not absolute.
 
 - **Server starts then says CUDA probe failed → CPU** — install the two
   `nvidia-*-cu12` wheels (install.bat does) and update the GPU driver.
-- **Out of VRAM / stutter while the laptop games** — set
+- **Out of VRAM / stutter while the server machine also games** — set
   `"whisper_model": "small"` in `server/config.json` (and/or
   `--whisper-model small`).
 - **Bot joins but no subtitles** — the bot must NOT be self-deafened
