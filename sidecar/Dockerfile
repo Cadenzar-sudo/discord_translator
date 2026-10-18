@@ -11,7 +11,7 @@ RUN npm ci --omit=dev
 FROM node:22-slim
 WORKDIR /app
 COPY --from=deps /app/node_modules node_modules
-COPY index.js .
+COPY index.js groups.js ./
 
 # same mounted config.json the Python server reads
 ENV CONFIG_PATH=/data/config.json

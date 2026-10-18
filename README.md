@@ -129,7 +129,8 @@ listed keeps their own labeled stream — so your Korean speakers stay solo.
 }
 ```
 
-Rules: member matching is case-insensitive on Discord display names; the
+Rules: member matching is case-insensitive on the Discord tag
+(`user.username`, e.g. `dontcross.theline`) or the server display name; the
 optional per-group `language` pins transcription (recommended — mixed
 streams misdetect more easily); groups are honored **only when
 `asr_engine` is `"groq"`**; the voice-bot reads this at startup, so apply

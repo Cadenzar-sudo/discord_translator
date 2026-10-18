@@ -159,11 +159,6 @@ function sendFrame(uid, name, float32) {
 // ------------------------------------------------------- per-user pipeline
 let activeConnection = null;
 
-function displayName(guild, userId) {
-  const m = guild.members.cache.get(userId);
-  return (m && m.displayName) || `user-${userId.slice(-4)}`;
-}
-
 // 48 kHz stereo s16le PCM -> mono 16 kHz float32 (3:1 average decimation)
 function toMono16k(stereoPcm) {
   const frames = Math.floor(stereoPcm.length / 4);
@@ -192,8 +187,14 @@ const streamAcc = new Accumulators(FRAME_SAMPLES);
 function subscribeUser(connection, userId) {
   if (subscriptions.has(userId) || !connection) return;
   const guild = client.guilds.cache.get(connection.joinConfig.guildId);
-  const name = guild ? displayName(guild, userId) : `user-${userId.slice(-4)}`;
-  const group = GROUPS.get(name.trim().toLowerCase()) || null;
+  const member = guild ? guild.members.cache.get(userId) : null;
+  const name = (member && member.displayName) || `user-${userId.slice(-4)}`;
+  // asr_groups matches the Discord TAG (user.username) or the server
+  // display name, case-insensitive — whichever the config author used
+  const tag = ((member && member.user && member.user.username) || "")
+    .trim().toLowerCase();
+  const group = GROUPS.get(name.trim().toLowerCase()) ||
+    (tag && GROUPS.get(tag)) || null;
   // grouped members share one VAD session per group, labeled batch:<group>;
   // the empty display name makes their subtitle lines unlabeled
   const uid = group ? `batch:${group.key}` : userId;

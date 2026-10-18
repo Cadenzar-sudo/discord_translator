@@ -100,7 +100,8 @@ DEFAULTS = {
     #     "english": ["Alice", "Bob"],
     #     "japanese": {"members": ["Kenji"], "language": "ja"}
     #   }
-    # Member matching is case-insensitive on Discord display names. The
+    # Member matching is case-insensitive on the Discord tag (user.username)
+    # or the server display name. The
     # optional per-group "language" pins transcription for the batch
     # (recommended: mixed streams misdetect more easily than solo ones).
     "asr_groups": {},
