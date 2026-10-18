@@ -140,11 +140,16 @@ function sendFrame(uid, name, float32) {
   if (uidBytes.length > 64) uidBytes = uidBytes.subarray(0, 64);
   let nameBytes = Buffer.from(name, "utf8");
   if (nameBytes.length > 128) nameBytes = nameBytes.subarray(0, 128);
-  const header = Buffer.alloc(4);
-  header.writeUInt16LE(uidBytes.length, 0);
-  header.writeUInt16LE(nameBytes.length, 2);
+  const uidLen = Buffer.alloc(2);
+  uidLen.writeUInt16LE(uidBytes.length, 0);
+  const nameLen = Buffer.alloc(2);
+  nameLen.writeUInt16LE(nameBytes.length, 0);
+  // wire order matches the server parser: len-prefixed uid, len-prefixed
+  // name, then samples (an earlier draft put both lengths up front — the
+  // server read the name length from inside the uid and dropped everything
+  // as malformed)
   const payload = Buffer.concat([
-    header, uidBytes, nameBytes,
+    uidLen, uidBytes, nameLen, nameBytes,
     Buffer.from(float32.buffer, float32.byteOffset, float32.byteLength),
   ]);
   if (ws && ws.readyState === WebSocket.OPEN) {
