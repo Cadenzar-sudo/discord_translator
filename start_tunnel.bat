@@ -42,7 +42,7 @@ REM compose interpolates ${CLOUDFLARE_TUNNEL_TOKEN} from .env automatically
 > .env echo CLOUDFLARE_TUNNEL_TOKEN=%TOKEN%
 
 echo [tunnel] starting cloudflared container...
-docker compose --profile tunnel up -d cloudflared || exit /b 1
+docker compose --profile tunnel up -d cloudflared --no-deps || exit /b 1
 timeout /t 3 /nobreak >nul
 docker compose --profile tunnel logs --tail 15 cloudflared
 echo.
