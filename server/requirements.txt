@@ -1,0 +1,23 @@
+numpy>=1.26
+soxr>=0.5.0
+sounddevice>=0.4.6
+faster-whisper>=1.1.1
+ctranslate2>=4.5.0
+transformers>=4.45
+sentencepiece>=0.2.0
+protobuf>=4.25
+huggingface_hub>=0.24
+# py-cord implements Discord's DAVE voice E2EE (mandatory since 2026);
+# discord.py does not. davey is the DAVE protocol dependency — required.
+py-cord[voice]>=2.8
+davey>=0.1.7
+aiohttp>=3.10
+av>=12
+# bench extras (run with the server venv)
+sacrebleu>=2.4
+yt-dlp>=2025.1.1
+# GPU runtime DLLs for CTranslate2 on Windows (CUDA 12 + cuDNN 9).
+# If these fail to install on your machine, remove them and install
+# CUDA Toolkit 12.x + cuDNN 9 system-wide instead (see README).
+nvidia-cublas-cu12>=12.3; sys_platform == "win32"
+nvidia-cudnn-cu12>=9.0; sys_platform == "win32"

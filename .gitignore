@@ -1,0 +1,25 @@
+# per-machine
+server/config.json
+client/config.json
+server/models/
+server/debug_audio/
+server/discord_web_profile/
+bench/bench_cache/*
+!bench/bench_cache/test_ko.wav
+!bench/bench_cache/media_index.json
+bench/bench_out/
+bench/overlay_demo.png
+# python
+venv/
+__pycache__/
+*.pyc
+# build
+client/dist/
+client/build/
+*.spec
+*.log
+server/setup_code.txt
+# docker runtime (tokens) & sidecar
+docker-data/
+sidecar/node_modules/
+sidecar/package-lock.json.bak
