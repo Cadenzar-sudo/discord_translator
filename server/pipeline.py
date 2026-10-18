@@ -143,8 +143,8 @@ class PipelineWorker(threading.Thread):
         self.transcriber = None  # local whisper: loaded lazily when needed
         self.groq = None
         self._groq_cooldown_until = 0.0  # monotonic: skip Groq until then
-        self.azure_stt = None
-        if self.cfg.get("asr_engine") == "groq":
+        engine = self.cfg.get("asr_engine")
+        if engine in ("groq", "local_first"):
             gq = self.cfg.get("groq") or {}
             if gq.get("key"):
                 try:
@@ -152,15 +152,24 @@ class PipelineWorker(threading.Thread):
                     self.groq = GroqASR(gq["key"],
                                         gq.get("model") or
                                         "whisper-large-v3-turbo")
-                    print(f"[init] ASR engine: Groq ({self.groq.model}) — "
-                          f"local whisper loads only as fallback")
+                    if engine == "groq":
+                        print(f"[init] ASR engine: Groq ({self.groq.model}) — "
+                              f"local whisper loads only as fallback")
+                    else:
+                        print(f"[init] ASR engine: local whisper first "
+                              f"({self.cfg['whisper_model']}) — Groq "
+                              f"({self.groq.model}) as fallback")
                 except Exception as e:
                     print(f"[init] Groq init failed ({e}); using local whisper")
-            else:
+            elif engine == "groq":
                 print("[init] asr_engine=groq but groq.key is empty — using "
                       "local whisper (run setup.bat or set groq.key)")
+            else:
+                print("[init] asr_engine=local_first with no groq.key — "
+                      "local whisper only")
         else:
             print("[init] ASR engine: local faster-whisper")
+        self.azure_stt = None
         # Azure Speech as the middle fallback: Groq quota/errors -> Azure
         # (needs the utterance language, so only used when it is known)
         azs = self.cfg.get("azure_speech") or {}
@@ -180,7 +189,10 @@ class PipelineWorker(threading.Thread):
                 print("[init] Azure Speech PAID fallback: on (student credits)")
             except Exception as e:
                 print(f"[init] Azure Speech paid init failed ({e})")
-        if self.groq is None:
+        if engine == "local_first" or self.groq is None:
+            # local-first mode loads whisper NOW (it is the primary, not a
+            # lazy fallback) — the box running this mode is expected to have
+            # the VRAM for it
             self._load_local_transcriber()
         t0 = time.time()
         # NLLB is always loaded: fallback for Azure quota/outage/unsupported
@@ -263,58 +275,75 @@ class PipelineWorker(threading.Thread):
                 add = (prof.get("prompt_add") or {}).get(lang_arg, "")
                 if add:
                     prompt = f"{prompt} {add}" if prompt else add
-            # Groq free tier gates at ~20 requests/minute: partial subtitles
-            # are skipped so finals always fit under the gate
-            if self.groq is not None and partial and \
+            # Groq free tier gates at ~20 requests/minute: with Groq as the
+            # PRIMARY (asr_engine=groq) partial subtitles are skipped so
+            # finals always fit under the gate; local-first mode streams
+            # partials freely since local decoding costs nothing
+            if self.cfg.get("asr_engine") == "groq" and partial and \
                     (self.cfg.get("groq") or {}).get("skip_partials", True):
                 continue
+            # ASR fallback chain: Groq-primary keeps local whisper as the
+            # last resort; local-first (GPU boxes) flips the order and drops
+            # to Groq only when local decoding fails
             text = None
-            groq_ready = self.groq is not None and \
-                time.monotonic() >= self._groq_cooldown_until
-            if groq_ready:
-                try:
-                    text, seg_texts, info = self.groq.transcribe(
-                        seg, language=lang_arg, initial_prompt=prompt)
-                    if self._groq_cooldown_until:
-                        self._groq_cooldown_until = 0.0
-                        print("[worker] Groq window reset — Groq is primary again")
-                except Exception as e:
-                    msg = str(e)
-                    if "429" in msg or "rate limit" in msg.lower():
-                        self._groq_cooldown_until = time.monotonic() + \
-                            GROQ_RATELIMIT_COOLDOWN_S
-                        print(f"[worker] Groq rate-limited — Azure serves for "
-                              f"{GROQ_RATELIMIT_COOLDOWN_S:.0f}s, then Groq "
-                              f"retries")
-                    else:
-                        self._groq_cooldown_until = time.monotonic() + \
-                            GROQ_ERROR_COOLDOWN_S
-                        print(f"[worker] Groq error ({e}) — retrying in "
-                              f"{GROQ_ERROR_COOLDOWN_S:.0f}s")
-            if text is None and self.azure_stt is not None and lang_arg:
-                # Azure Speech needs the language up front: only usable when
-                # the language is pinned or vote-locked (skip on auto-unknown)
-                try:
-                    text, seg_texts, info = self.azure_stt.transcribe(
-                        seg, language=lang_arg)
-                except Exception as e:
-                    print(f"[worker] Azure Speech failed ({e})")
-            if text is None and self.azure_stt_paid is not None and lang_arg:
-                # free Speech tier exhausted: spend student credits to keep
-                # cloud quality before dropping to local whisper
-                try:
-                    text, seg_texts, info = self.azure_stt_paid.transcribe(
-                        seg, language=lang_arg)
-                except Exception as e:
-                    print(f"[worker] Azure Speech paid failed ({e})")
-            if text is None:
-                try:
-                    text, seg_texts, info = \
-                        self._load_local_transcriber().transcribe(
+            if self.cfg.get("asr_engine") == "local_first":
+                engines = ("local", "groq", "azure_free", "azure_paid")
+            else:
+                engines = ("groq", "azure_free", "azure_paid", "local")
+            for engine in engines:
+                if text is not None:
+                    break
+                if engine == "groq":
+                    if self.groq is None or \
+                            time.monotonic() < self._groq_cooldown_until:
+                        continue
+                    try:
+                        text, seg_texts, info = self.groq.transcribe(
                             seg, language=lang_arg, initial_prompt=prompt)
-                except Exception as e:
-                    print(f"[worker] Transcription error: {e}")
-                    continue
+                        if self._groq_cooldown_until:
+                            self._groq_cooldown_until = 0.0
+                            print("[worker] Groq window reset — Groq is back "
+                                  "in the chain")
+                    except Exception as e:
+                        msg = str(e)
+                        if "429" in msg or "rate limit" in msg.lower():
+                            self._groq_cooldown_until = time.monotonic() + \
+                                GROQ_RATELIMIT_COOLDOWN_S
+                            print(f"[worker] Groq rate-limited — fallbacks "
+                                  f"serve for {GROQ_RATELIMIT_COOLDOWN_S:.0f}s")
+                        else:
+                            self._groq_cooldown_until = time.monotonic() + \
+                                GROQ_ERROR_COOLDOWN_S
+                            print(f"[worker] Groq error ({e}) — retrying in "
+                                  f"{GROQ_ERROR_COOLDOWN_S:.0f}s")
+                elif engine == "azure_free":
+                    if self.azure_stt is None or not lang_arg:
+                        continue
+                    # Azure Speech needs the language up front: only usable
+                    # when it is pinned or vote-locked
+                    try:
+                        text, seg_texts, info = self.azure_stt.transcribe(
+                            seg, language=lang_arg)
+                    except Exception as e:
+                        print(f"[worker] Azure Speech failed ({e})")
+                elif engine == "azure_paid":
+                    if self.azure_stt_paid is None or not lang_arg:
+                        continue
+                    # free Speech tier exhausted: spend student credits
+                    try:
+                        text, seg_texts, info = self.azure_stt_paid.transcribe(
+                            seg, language=lang_arg)
+                    except Exception as e:
+                        print(f"[worker] Azure Speech paid failed ({e})")
+                else:  # local whisper
+                    try:
+                        text, seg_texts, info = \
+                            self._load_local_transcriber().transcribe(
+                                seg, language=lang_arg, initial_prompt=prompt)
+                    except Exception as e:
+                        print(f"[worker] Transcription error: {e}")
+            if text is None:
+                continue
             t_asr = time.monotonic()
             detected = info.language or "?"
             self._record_detection(sid, detected,

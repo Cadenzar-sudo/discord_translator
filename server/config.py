@@ -76,6 +76,10 @@ DEFAULTS = {
     #   are skipped to stay under the gate). Local whisper loads lazily only
     #   if Groq fails, so the GPU VRAM stays free. Needs groq.key.
     # "asr_engine": "local" = faster-whisper on this machine (default).
+    # "asr_engine": "local_first" = faster-whisper primary, loaded at startup
+    #   (use on boxes with the VRAM for it, e.g. the RTX 3050 deploy), with
+    #   Groq as fallback when local decoding fails; Azure Speech tiers sit
+    #   behind Groq. Partials stream from local at no quota cost.
     "asr_engine": "local",
     "groq": {
         "key": "",            # console.groq.com -> API Keys

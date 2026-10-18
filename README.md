@@ -72,6 +72,30 @@ bot works (scopes `bot` + `applications.commands`, perms `View Channel` +
 `Connect`; the console prints the URL on login). One rule: the bot must
 never be deafened — a deafened bot receives no audio (it won't self-deafen).
 
+### Moving it to another PC (e.g. the RTX 3050 4 GB box)
+
+Everything ships with the repo; the machine needs Docker Desktop (+ WSL2 and
+an NVIDIA driver for the GPU variant — or nothing special for CPU).
+
+1. Copy the repo over; copy `server\models` (3.3 GB) with it, or let the
+   first start download it from HuggingFace.
+2. Build `docker-data\config.json` as above, plus for a GPU box:
+   ```json
+   "asr_engine": "local_first"
+   ```
+   — local faster-whisper becomes the PRIMARY (loaded at startup, zero
+   quota, partial subtitles stream), and Groq/Azure Speech only catch
+   failures. `device/compute_type` stay `"auto"`. On 4 GB VRAM keep
+   `"whisper_model": "large-v3-turbo"` if the box only translates; drop to
+   `"small"` if it games at the same time.
+3. Start with the GPU variant:
+   `docker compose -f compose.yml -f compose.gpu.yml up -d --build`
+4. Viewers reach the server at `ws://<new-pc-ip>:8765/ws` on LAN; over the
+   internet, install `cloudflared` on that box and point the existing
+   tunnel at its port 8765 (friends' overlay config doesn't change).
+5. One bot token = one voice connection: don't run two stacks with the
+   same token at once.
+
 ---
 
 ## Native setup (legacy — the original non-Docker flow)

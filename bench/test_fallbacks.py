@@ -118,7 +118,8 @@ class Recorder:
 
 
 def run_scenario(name, groq_ok: bool, free_ok: bool, paid_ok: bool,
-                 expect_calls: dict):
+                 expect_calls: dict, asr_engine: str = "groq",
+                 local_ok: bool = True, expect_emitted: int | None = None):
     from pipeline import PipelineWorker
 
     cfg = {
@@ -127,7 +128,7 @@ def run_scenario(name, groq_ok: bool, free_ok: bool, paid_ok: bool,
         "initial_prompts": {}, "debug_save_audio": False,
         "groq": {"skip_partials": True}, "backlog_keep": 3,
         "backlog_max": 12, "beam_size": 1, "cpu_threads": 4,
-        "whisper_model": "large-v3-turbo",
+        "whisper_model": "large-v3-turbo", "asr_engine": asr_engine,
     }
     seg_q: queue.Queue = queue.Queue()
     registry = SimpleNamespace(distinct=lambda: set(), viewer_count=lambda: 0)
@@ -149,6 +150,8 @@ def run_scenario(name, groq_ok: bool, free_ok: bool, paid_ok: bool,
 
     def fake_local_loader():
         local_calls.append(1)
+        if not local_ok:
+            raise RuntimeError("CUDA out of memory (mock)")
         return local_ns
 
     w._load_local_transcriber = fake_local_loader
@@ -165,7 +168,7 @@ def run_scenario(name, groq_ok: bool, free_ok: bool, paid_ok: bool,
     w.stop_event.set()
     w.join(timeout=5)
 
-    ok = len(emitted) == n
+    ok = len(emitted) == (n if expect_emitted is None else expect_emitted)
     detail = f"emitted {len(emitted)}/{n}; calls: groq={w.groq.calls} " \
              f"free={w.azure_stt.calls} paid={w.azure_stt_paid.calls} local={len(local_calls)}"
     for engine, want in expect_calls.items():
@@ -207,6 +210,33 @@ def main():
         "chain: all cloud fail -> local whisper serves",
         False, False, False,
         expect_calls={"groq": 1, "free": 3, "paid": 3, "local": 3})
+
+    print("\n--- local_first mode (asr_engine=local_first) ---")
+    # 5. healthy local: groq/azure untouched — the whole point of the mode
+    run_scenario(
+        "local_first: healthy local serves, cloud untouched",
+        True, True, True,
+        expect_calls={"groq": 0, "free": 0, "paid": 0, "local": 3},
+        asr_engine="local_first")
+    # 6. local OOM: falls back to Groq, azure untouched
+    run_scenario(
+        "local_first: local fails -> Groq serves",
+        True, True, True,
+        expect_calls={"groq": 3, "free": 0, "paid": 0, "local": 3},
+        asr_engine="local_first", local_ok=False)
+    # 7. local fails + Groq 429 (1st item falls through, rest via cooldown):
+    #    Azure Speech free catches
+    run_scenario(
+        "local_first: local fails + Groq 429 -> Azure free serves",
+        False, True, True,
+        expect_calls={"groq": 1, "free": 3, "paid": 0, "local": 3},
+        asr_engine="local_first", local_ok=False)
+    # 8. everything fails: utterances dropped cleanly, no crash
+    run_scenario(
+        "local_first: everything fails -> clean drop",
+        False, False, False,
+        expect_calls={"groq": 1, "free": 3, "paid": 3, "local": 3},
+        asr_engine="local_first", local_ok=False, expect_emitted=0)
 
     print("\n=== summary ===")
     bad = [r for r in results if r[0] == FAIL]
