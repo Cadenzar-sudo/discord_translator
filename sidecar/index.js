@@ -34,6 +34,7 @@ const {
   VoiceConnectionStatus,
 } = require("@discordjs/voice");
 const prism = require("prism-media");
+const WebSocket = require("ws"); // undici's global WS swallows refused connects
 
 const FRAME_SAMPLES = 1600; // 100 ms of mono 16 kHz float32 per WS frame
 const INACTIVITY_END_MS = 1000;
@@ -87,34 +88,33 @@ let wsBackoff = 1000;
 const sendQueue = [];
 
 function wsConnect() {
-  const url = AUDIO_URL + (SERVER_TOKEN
-    ? `${AUDIO_URL.includes("?") ? "&" : "?"}token=${encodeURIComponent(SERVER_TOKEN)}`
-    : "");
   console.log(`[sidecar] connecting to ${AUDIO_URL}`);
-  const sock = new WebSocket(url);
-  sock.binaryType = "arraybuffer";
+  const sock = new WebSocket(AUDIO_URL, {
+    headers: SERVER_TOKEN ? { Authorization: `Bearer ${SERVER_TOKEN}` } : {},
+  });
 
-  sock.onopen = () => {
+  sock.on("open", () => {
     wsBackoff = 1000;
     console.log("[sidecar] /audio connected");
     sock.send(JSON.stringify({ type: "hello", client: "voice-bot",
                                speaker: cfg.speaker_name || "Discord" }));
     flushQueue();
-  };
-  sock.onmessage = (ev) => {
+  });
+  sock.on("message", (data) => {
     try {
-      const msg = JSON.parse(String(ev.data));
+      const msg = JSON.parse(String(data));
       if (msg.type === "welcome") console.log("[sidecar] server welcomed us");
     } catch { /* ignore non-JSON */ }
-  };
-  sock.onclose = (ev) => {
+  });
+  sock.on("close", (code, reason) => {
     if (ws === sock) ws = null;
-    console.log(`[sidecar] /audio closed (code ${ev.code}) — retrying in ` +
-                `${wsBackoff} ms`);
+    console.log(`[sidecar] /audio closed (code ${code} ${reason || ""}) — ` +
+                `retrying in ${wsBackoff} ms`);
     setTimeout(wsConnect, wsBackoff);
     wsBackoff = Math.min(wsBackoff * 2, 10_000);
-  };
-  sock.onerror = () => { /* onclose follows */ };
+  });
+  sock.on("error", (err) =>
+    console.log(`[sidecar] /audio error: ${err.message}`));
   ws = sock;
 }
 
@@ -171,19 +171,34 @@ function attachUser(connection, userId) {
   const stream = connection.receiver.subscribe(userId, {
     end: { behavior: EndBehaviorType.AfterInactivity, duration: INACTIVITY_END_MS },
   });
+  // prism-media's OpusDecoder is a Transform stream: opus in, s16le PCM out
   const decoder = new prism.opus.Decoder({
     rate: 48000, channels: 2, frameSize: 960,
   });
   let acc = new Float32Array(0);
   let sentSamples = 0;
+  let packets = 0;
 
-  stream.on("data", (opusPacket) => {
-    let pcm;
-    try {
-      pcm = decoder.decode(opusPacket);
-    } catch {
-      return; // bad packet: skip, the next one carries its own timing
+  stream.on("error", (e) =>
+    console.log(`[voice] ${name} stream ERROR: ${e.message || e}`));
+  decoder.on("error", (e) =>
+    console.log(`[voice] ${name} decode ERROR: ${e.message || e}`));
+
+  const flush = () => {
+    if (acc.length) {
+      sendFrame(name, acc); // flush the sub-100 ms tail
+      acc = new Float32Array(0);
     }
+  };
+
+  decoder.on("end", () => {
+    flush();
+    console.log(`[voice] ${name} stream ended ` +
+                `(${packets} pkts, ${(sentSamples / 16000).toFixed(1)}s sent)`);
+  });
+
+  decoder.on("data", (pcm) => {
+    packets++;
     const chunk = toMono16k(pcm);
     const merged = new Float32Array(acc.length + chunk.length);
     merged.set(acc);
@@ -195,13 +210,7 @@ function attachUser(connection, userId) {
       sentSamples += FRAME_SAMPLES;
     }
   });
-  stream.on("end", () => {
-    if (acc.length) sendFrame(name, acc); // flush the sub-100 ms tail
-    try { decoder.destroy(); } catch { /* already gone */ }
-    console.log(`[voice] ${name} stream ended ` +
-                `(${(sentSamples / 16000).toFixed(1)}s sent)`);
-  });
-  stream.on("error", () => { /* receiver cleans up; speaking restarts us */ });
+  stream.pipe(decoder);
 }
 
 // -------------------------------------------------------------- voice join
@@ -213,12 +222,17 @@ function joinChannel(channel) {
     channelId: channel.id,
     guildId: channel.guildId,
     adapterCreator: channel.guild.voiceAdapterCreator,
-    selfDeafen: false, // a deafened bot receives no audio
+    // a deafened bot receives no audio; note the option is `selfDeaf`
+    // (not "selfDeafen" — unknown options are silently ignored and Discord
+    // defaults bots to self-deafened)
+    selfDeaf: false,
+    selfMute: false,
   });
   activeConnection = connection;
   joinedChannelId = channel.id;
   connection.on(VoiceConnectionStatus.Ready, () => {
-    console.log(`[sidecar] voice ready in '${channel.name}' — attaching receiver`);
+    console.log(`[sidecar] voice ready in '${channel.name}' — attaching ` +
+                `receiver (dave session: ${Boolean(connection.daveSession)})`);
     const receiver = connection.receiver;
     receiver.speaking.on("start", (userId) => attachUser(connection, userId));
   });
