@@ -19,9 +19,6 @@ DEFAULTS = {
     #   to the /audio endpoint of the subtitle server. Two shippers exist:
     #   the Node voice-bot sidecar (per-speaker DAVE audio, primary) and
     #   audio_shipper.py on Windows (VB-Cable mixed stream, fallback).
-    # "bot": a py-cord bot joins the channel and receives per-user audio.
-    #   Broken while py-cord's DAVE voice receive is unfinished (#3139) —
-    #   kept for when that ships.
     "source": "loopback",
     "audio_device": "CABLE Output",  # recording device substring (loopback mode)
     "capture_sample_rate": 0,        # 0 = use the device's default rate
@@ -36,7 +33,7 @@ DEFAULTS = {
         "channel": "Lobby",   # voice channel name to join
         "auto_join": True,    # launch the joiner with the server
     },
-    # --- discord bot (source = "bot" only) ---
+    # --- discord bot account (read by the voice-bot sidecar container) ---
     "discord": {
         "token": "",          # bot token from the Developer Portal (setup.bat sets this)
         "guild_id": None,     # optional: your server's ID -> slash commands appear instantly

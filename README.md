@@ -98,16 +98,14 @@ an NVIDIA driver for the GPU variant — or nothing special for CPU).
 
 ---
 
-## Native setup (legacy — the original non-Docker flow)
+## Server native pieces (only Version A needs these)
 
-**Requirements:** Windows, Python 3.10+, NVIDIA GPU (4 GB VRAM minimum),
-~5 GB disk. `large-v3-turbo` + NLLB-1.3B fit a 4 GB card **if the PC isn't
-gaming at the same time**; if VRAM is tight set `"whisper_model": "small"`
-in `server/config.json`.
+The Docker stack is self-contained; the **VB-Cable fallback** runs two small
+Windows-native processes (the web joiner's Playwright browser and the audio
+shipper's PortAudio capture), so the machine running Version A needs:
 
-1. **`server\install.bat`** — venv + dependencies + models (~3.4 GB).
-   If the old desktop app (`D:\Translation Discord`) is on the machine it
-   offers to copy its `models\` folder instead of downloading.
+1. **`server\install.bat`** — venv + dependencies (skip the models copy; the
+   container handles models). Only needed once.
 2. **`server\setup.bat`** — pastes in the bot token, generates the access
    token, prints the one-line setup code for friends.
 3. **Create the Discord bot** (one time):
@@ -115,9 +113,25 @@ in `server/config.json`.
    - Bot tab → Reset Token → copy (goes into setup.bat).
    - OAuth2 → URL Generator → scopes `bot` + `applications.commands`,
      perms `View Channels` + `Connect` → open the URL → pick your server.
-     (The server console also prints a ready-made invite link on startup.)
-4. **`server\start.bat`** — bot online. In Discord: `/join` while in a voice
-   channel. Done.
+
+### One-click: `setup_gpu.bat`
+
+Double-click and it does the whole Docker bring-up: creates
+`docker-data\config.json` from your server config, installs/starts Docker
+Desktop if missing, detects the NVIDIA GPU + driver (falls back to the CPU
+image with a notice), picks the existing models folder if present, builds,
+starts both containers and waits until `/health` reports ready. Re-run any
+time — it is idempotent.
+
+### Overlay exes
+
+- **`client\build_client.bat`** → `dist\TranslatorOverlay.zip` — the build
+  you send to friends (no admin rights).
+- **`client\build_admin.bat`** → `dist\TranslatorOverlayAdmin.zip` — same
+  overlay with the **admin token** from your `client\config.json` baked in:
+  Ctrl+Alt+G toggles chat/game mode, Ctrl+Alt+L cycles the server's pinned
+  language, plus a "ADMIN CONTROLS ON" badge on connect. Never share this
+  zip — it carries the admin token.
 
 ### Exposing it to friends over the internet (Cloudflare Tunnel)
 

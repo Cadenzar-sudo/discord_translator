@@ -185,6 +185,11 @@ class SubClient:
                             self.overlay.set_conn(None)
                             self.overlay.set_connection_state(True)
                             self.overlay.flash_badge("CONNECTED", 1.5)
+                            if srv.get("admin_token"):
+                                self.overlay.flash_badge("ADMIN CONTROLS ON",
+                                                         2.5)
+                            self.overlay.set_language_label(
+                                (self.state.get("language") or "auto").upper())
                         print(f"[client] Connected to {url} "
                               f"(target={self.cfg['target_lang']})")
                         async for msg in ws:

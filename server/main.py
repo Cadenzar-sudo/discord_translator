@@ -152,13 +152,11 @@ async def amain(cfg, args):
 
     loopback = cfg.get("source", "loopback") == "loopback" and not args.test_file
     ws_mode = cfg.get("source") == "ws" and not args.test_file
-    token = cfg["discord"]["token"]
-    if not loopback and not ws_mode and not token and not args.test_file:
-        print("[init] No bot token configured. Run setup.bat (or put a token "
-              "in config.json under discord.token), use --test-file for "
-              "offline testing, set source=ws to receive audio from a remote "
-              "shipper, or set source=loopback to capture a normal Discord "
-              "client via VB-Cable.")
+    if not loopback and not ws_mode and not args.test_file:
+        print(f"[init] Unknown source {cfg.get('source')!r}. Use \"loopback\" "
+              "(capture a normal Discord client via VB-Cable) or \"ws\" "
+              "(receive audio from the voice-bot sidecar / audio_shipper.py), "
+              "or --test-file for offline testing.")
         raise SystemExit(2)
 
     add_cuda_dll_dirs()
@@ -169,11 +167,9 @@ async def amain(cfg, args):
     paused = threading.Event()
     manager = SpeakerManager(cfg, seg_q, paused)
     registry = TargetRegistry()
-    state = {"bot": None, "ready": False}
+    state = {"ready": False}
 
     def status_provider():
-        if state["bot"]:
-            return state["bot"].status_dict()
         return {"mode": cfg.get("profile", "chat"), "channel": "loopback",
                 "language": cfg.get("language"),
                 "speakers": manager.names(),
@@ -243,20 +239,6 @@ async def amain(cfg, args):
             state["joiner"] = joiner
             print("[init] Discord Web auto-joiner launched "
                   "(logs: discord_web_joiner.log)")
-    else:
-        bot_task = None
-        if token:
-            from bot import TranslatorBot
-            bot = TranslatorBot(cfg, manager, worker, registry)
-            state["bot"] = bot
-            bot_task = asyncio.create_task(bot.start(token))
-
-            def _bot_done(task):
-                if not task.cancelled() and task.exception():
-                    print(f"[bot] FATAL: {task.exception()!r}\n"
-                          "  Check discord.token in config.json (setup.bat).")
-
-            bot_task.add_done_callback(_bot_done)
 
     async def loop_monitor():
         """Warn when the event loop stalls — stalls break WS heartbeats and
@@ -294,13 +276,6 @@ async def amain(cfg, args):
                 joiner.terminate()
             except Exception:
                 pass
-        if state["bot"]:
-            try:
-                await state["bot"].close()
-            except Exception:
-                pass
-        if bot_task is not None:
-            bot_task.cancel()
         try:
             # aiohttp cleanup can stall on lingering keep-alive sockets;
             # don't let that trap the whole process on exit
@@ -310,9 +285,7 @@ async def amain(cfg, args):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Discord bot translator server")
-    ap.add_argument("--debug-voice", action="store_true",
-                    help="verbose discord.py/voice_recv logging (handshake stalls)")
+    ap = argparse.ArgumentParser(description="Discord translator server")
     ap.add_argument("--test-file", metavar="PATH",
                     help="feed a media file as a fake speaker (no Discord)")
     ap.add_argument("--speaker", metavar="NAME", default="Test",
@@ -338,15 +311,11 @@ def main():
         cfg["server"]["port"] = args.port
     apply_profile(cfg)
 
-    # library errors (voice_recv swallows them into reader.error) must always
-    # reach our log — without this, a dead packet router fails silently
+    # library errors must always reach our log — some swallowed errors
+    # fail silently otherwise
     import logging
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(name)s %(levelname)s %(message)s")
-    if args.debug_voice:
-        for name in ("discord.voice", "discord.voice_state", "discord.gateway",
-                     "discord.client"):
-            logging.getLogger(name).setLevel(logging.DEBUG)
 
     try:
         asyncio.run(amain(cfg, args))

@@ -7,10 +7,6 @@ transformers>=4.45
 sentencepiece>=0.2.0
 protobuf>=4.25
 huggingface_hub>=0.24
-# py-cord implements Discord's DAVE voice E2EE (mandatory since 2026);
-# discord.py does not. davey is the DAVE protocol dependency — required.
-py-cord[voice]>=2.8
-davey>=0.1.7
 aiohttp>=3.10
 av>=12
 # bench extras (run with the server venv)
