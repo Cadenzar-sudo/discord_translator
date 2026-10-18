@@ -30,7 +30,51 @@ that's what the client consent note is for. Keep it to your own friend group.
 
 ---
 
-## Server setup (the GPU PC — your laptop)
+## Two versions (Dockerized) — pick with one double-click
+
+Both versions serve the SAME overlay clients (nothing changes for friends).
+
+| | **Version B — Discord bot (primary)** | **Version A — VB-Cable loopback (fallback)** |
+|---|---|---|
+| Audio source | the `voice-bot` sidecar container joins voice with **DAVE E2EE** and ships **per-speaker** audio (real display names, per-speaker VAD/voting) | Playwright Chrome joins as a user; audio loops through VB-Cable as one mixed stream labelled "Discord" |
+| Runs where | **everything in Docker** (server + sidecar) — portable to any PC/VPS | server container + native `audio_shipper.py` + web joiner on this Windows PC |
+| Start | `start_bot.bat` / `stop_bot.bat` | `start_loopback.bat` / `stop_loopback.bat` |
+| Needs | bot token in the config (same setup as ever) | VB-Cable + the saved web session (`server\discord_web_profile`) |
+
+If the bot path ever breaks upstream (DAVE changes, bot kicked), stop it and
+run Version A — that's the battle-tested loopback stack, kept as the final
+fallback.
+
+### One-time Docker setup
+
+1. `docker-data\config.json` — copy of `server\config.json` (holds your
+   tokens, stays out of git) with two changes:
+   ```json
+   "source": "ws",
+   "audio_shipper": { "url": "ws://server:8765/audio" }
+   ```
+   Bot token, guild/channel IDs and access/admin tokens carry over
+   unchanged — `setup.bat` remains the only token setup you ever do.
+   The sidecar also reads `discord_web.channel_id` + `auto_join`
+   (boot-time join + 15 s watchdog) and `server.access_token`.
+2. Models: if `server\models` is missing, `start_bot.bat` reuses
+   `D:\discord-translator-bot\server\models` automatically; on a fresh
+   machine the container downloads ~3.3 GB from HuggingFace on first start.
+3. `start_bot.bat` — builds + starts both containers, waits for
+   <http://localhost:8765/health>. Bot health: <http://localhost:8766/>.
+   The bot auto-joins the configured voice channel; `/join` also works.
+4. GPU (optional): `docker compose -f compose.yml -f compose.gpu.yml up -d --build`
+   with WSL2 + an NVIDIA driver. CPU mode is fine day-to-day — Groq and
+   Azure do the heavy lifting.
+
+**Permissions — nothing new required:** the same invite as the old py-cord
+bot works (scopes `bot` + `applications.commands`, perms `View Channel` +
+`Connect`; the console prints the URL on login). One rule: the bot must
+never be deafened — a deafened bot receives no audio (it won't self-deafen).
+
+---
+
+## Native setup (legacy — the original non-Docker flow)
 
 **Requirements:** Windows, Python 3.10+, NVIDIA GPU (4 GB VRAM minimum),
 ~5 GB disk. `large-v3-turbo` + NLLB-1.3B fit a 4 GB card **if the PC isn't

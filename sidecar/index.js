@@ -266,14 +266,12 @@ const commands = [
 client.once(Events.ClientReady, async (c) => {
   console.log(`[sidecar] logged in as ${c.user.tag}`);
   try {
-    if (GUILD_ID) {
-      const guild = await c.guilds.fetch(GUILD_ID);
-      await guild.commands.set(commands); // per-guild = instant
+    // per-guild registration appears instantly (global sync can lag ~1h);
+    // iterate the guilds we're actually in — discord.guild_id in JSON is a
+    // number and loses precision beyond Number.MAX_SAFE_INTEGER
+    for (const [, guild] of c.guilds.cache) {
+      await guild.commands.set(commands);
       console.log(`[sidecar] /join /leave ready in '${guild.name}'`);
-    } else {
-      await c.application.commands.set(commands);
-      console.log("[sidecar] /join /leave registered globally " +
-        "(set discord.guild_id in config for instant availability)");
     }
   } catch (e) {
     console.error(`[sidecar] command registration failed: ${e.message}`);

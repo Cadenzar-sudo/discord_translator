@@ -7,6 +7,10 @@ per-viewer target fan-out (each connected client declares its own language),
 and every event carries per-stage timestamps for the latency benchmarks.
 """
 
+# lazy annotations: TargetRegistry.set() shadows the builtin `set` in this
+# class body, which breaks `-> set[str]` on Python <= 3.13 (3.14 defers)
+from __future__ import annotations
+
 import queue
 import threading
 import time
