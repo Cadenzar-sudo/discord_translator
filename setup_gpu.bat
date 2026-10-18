@@ -33,12 +33,15 @@ echo [setup] config: docker-data\config.json OK
 
 REM ---- 2. docker engine --------------------------------------------------
 where docker >nul 2>&1
+if not errorlevel 1 goto :docker_installed
+echo [setup] Docker not found - installing Docker Desktop via winget...
+winget install -e --id Docker.DockerDesktop --accept-source-agreements --accept-package-agreements
 if errorlevel 1 (
-  echo [setup] Docker not found - installing Docker Desktop via winget...
-  winget install -e --id Docker.DockerDesktop --accept-source-agreements --accept-package-agreements
-  if errorlevel 1 ( echo [setup] winget install failed - install Docker Desktop manually from docker.com & pause & exit /b 1 )
-  echo [setup] reboot may be required for WSL2 - re-run this script after.
+  echo [setup] winget install failed - install Docker Desktop manually from docker.com
+  pause & exit /b 1
 )
+echo [setup] reboot may be required for WSL2 - re-run this script after.
+:docker_installed
 docker info >nul 2>&1
 if not errorlevel 1 goto :docker_ok
 echo [setup] starting Docker Desktop...
@@ -55,38 +58,50 @@ pause & exit /b 1
 :docker_ok
 echo [setup] Docker engine OK
 
-REM ---- 3. GPU detection --------------------------------------------------
+REM ---- 3. GPU detection (nvidia-smi -L works on every driver) ------------
 set "GPU=0"
-nvidia-smi --query-gpu=name --format=csv,noheader >nul 2>&1
-if not errorlevel 1 (
-  set "GPU=1"
-  for /f "usebackq delims=" %%g in (`nvidia-smi --query-gpu=name --format=csv,noheader ^| more`) do set "GPUNAME=%%g"
-  echo [setup] NVIDIA GPU found: !GPUNAME!
-  docker info 2>nul | findstr /C:"nvidia" >nul
-  if errorlevel 1 echo [setup] note: nvidia runtime not listed yet - Docker Desktop exposes GPUs via WSL2 automatically on recent drivers.
-) else (
-  echo [setup] no NVIDIA GPU/driver detected - falling back to the CPU image.
-)
+set "GPUNAME=NVIDIA GPU"
+nvidia-smi -L >nul 2>&1
+if errorlevel 1 goto :no_gpu
+set "GPU=1"
+for /f "usebackq tokens=3,* delims= " %%a in (`nvidia-smi -L 2^>nul`) do set "GPUNAME=%%a %%b"
+:no_gpu
+if "%GPU%"=="1" goto :gpu_yes
+echo [setup] no NVIDIA GPU/driver detected - falling back to the CPU image.
+goto :models
+:gpu_yes
+echo [setup] NVIDIA GPU found: !GPUNAME!
 
 REM ---- 4. models ---------------------------------------------------------
 if defined TRANSLATOR_MODELS goto :have_models
-if exist "server\models" ( set "TRANSLATOR_MODELS=%cd%\server\models" & goto :have_models )
-if exist "D:\discord-translator-bot\server\models" set "TRANSLATOR_MODELS=D:\discord-translator-bot\server\models"
+if exist "server\models" goto :local_models
+if exist "D:\discord-translator-bot\server\models" goto :old_models
+echo [setup] models: none found - first start downloads them from HuggingFace
+goto :start
+:local_models
+set "TRANSLATOR_MODELS=%cd%\server\models"
+goto :have_models
+:old_models
+set "TRANSLATOR_MODELS=D:\discord-translator-bot\server\models"
 :have_models
-if defined TRANSLATOR_MODELS ( echo [setup] models: %TRANSLATOR_MODELS% ) else ( echo [setup] models: none found - first start downloads ~3.3 GB from HuggingFace )
+echo [setup] models: !TRANSLATOR_MODELS!
 
 REM ---- 5. build + start --------------------------------------------------
-if "%GPU%"=="1" (
-  echo [setup] building + starting with CUDA...
-  docker compose -f compose.yml -f compose.gpu.yml up -d --build
-) else (
-  echo [setup] building + starting (CPU)...
-  docker compose up -d --build
-)
-if errorlevel 1 ( echo [setup] compose failed - check the output above & pause & exit /b 1 )
+:start
+if "%GPU%"=="1" goto :start_gpu
+echo [setup] building + starting ^(CPU image^)...
+docker compose up -d --build
+goto :health
+:start_gpu
+echo [setup] building + starting with CUDA...
+docker compose -f compose.yml -f compose.gpu.yml up -d --build
+if not errorlevel 1 goto :health
+echo [setup] GPU compose failed - is WSL2 + the NVIDIA driver set up? Trying CPU...
+docker compose up -d --build
 
 REM ---- 6. health ---------------------------------------------------------
-echo [setup] waiting for the pipeline (model load ~30s on first run)...
+:health
+echo [setup] waiting for the pipeline ^(model load ~30s on first run^)...
 set /a tries=0
 :waithealth
 timeout /t 4 /nobreak >nul
@@ -106,7 +121,7 @@ echo ============================================================
 echo  Stack is up.  Subtitles: ws://localhost:8765/ws
 echo  Health:   http://localhost:8765/health   Bot: http://localhost:8766/
 echo  The voice-bot auto-joins your configured voice channel.
-echo  Stop everything with:  stop_bot.bat
+echo  Tunnel ^(internet access^): start_tunnel.bat   Stop: stop_bot.bat
 echo ============================================================
 if "%GPU%"=="1" echo  If "device" above says cpu instead of cuda, see README ^(WSL2 GPU setup^).
 pause
