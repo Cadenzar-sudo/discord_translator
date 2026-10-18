@@ -47,6 +47,55 @@ If the bot path ever breaks upstream (DAVE changes, bot kicked), stop it and
 run Version A — that's the battle-tested loopback stack, kept as the final
 fallback.
 
+### API tokens — what you need and where to get them
+
+All tokens live in one place: the `config.json` your stack actually reads
+(`docker-data\config.json`). Everything below has a free tier that covers a
+large friend group; you only create the accounts for the parts you use.
+
+**Discord bot** (required — this is what listens in the voice channel)
+
+1. <https://discord.com/developers/applications> → **New Application** → name it.
+2. **Bot** tab → **Reset Token** → copy → `discord.token`.
+   No Privileged Gateway Intents are needed.
+3. Invite it: **OAuth2 → URL Generator** → scopes `bot` +
+   `applications.commands`, permissions **View Channels** + **Connect** →
+   open the generated URL → pick your server. (The server console also
+   prints a ready-made invite link on startup.)
+4. Optional but recommended: in Discord enable **Settings → Advanced →
+   Developer Mode**, then right-click your server → *Copy Server ID* →
+   `discord.guild_id` (makes slash commands appear instantly), and
+   right-click your voice channel → *Copy Channel ID* →
+   `discord_web.channel_id` (the sidecar auto-joins it on boot).
+
+That's all the bot needs: View Channel + Connect, never deafened — a
+deafened bot receives no audio. It only listens; it never talks.
+
+**Groq** (primary speech-to-text; free tier ≈ 20 requests/min)
+
+1. <https://console.groq.com> → sign in → **API Keys** → Create API Key →
+   copy → `groq.key`.
+
+**Azure Speech** (optional — catches Groq when it's rate-limited)
+
+1. <https://portal.azure.com> → Create resource → **Speech** — the free F0
+   tier works.
+2. **Keys and Endpoint** → copy KEY 1 → `azure_speech.key`, and the
+   resource's region (e.g. `koreacentral`) → `azure_speech.region`.
+   A second paid resource can go in `azure_speech_paid` later.
+
+**Azure Translator** (translation; ~2M characters/month free)
+
+1. <https://portal.azure.com> → Create resource → **Translator** — free F0.
+2. **Keys and Endpoint** → KEY 1 → `azure.key`, region → `azure.region`.
+   Skipping this is fine — local NLLB translation is the built-in fallback.
+
+**Cloudflare** (optional — only for internet access, not needed on LAN)
+
+1. Tunnel token: see the `start_tunnel.bat` header below.
+2. Optional Zero Trust service tokens (lockdown): see "Locking it down"
+   below.
+
 ### One-time Docker setup
 
 1. `docker-data\config.json` — copy of `server\config.json` (holds your
