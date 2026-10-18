@@ -37,7 +37,7 @@ const prism = require("prism-media");
 const WebSocket = require("ws"); // undici's global WS swallows refused connects
 
 const FRAME_SAMPLES = 1600; // 100 ms of mono 16 kHz float32 per WS frame
-const INACTIVITY_END_MS = 1000;
+
 const WATCHDOG_MS = 15_000;
 const MAX_QUEUE = 40; // ~4 s of frames before drop-oldest
 const HEALTH_PORT = process.env.HEALTH_PORT || 8766;
@@ -163,18 +163,27 @@ function toMono16k(stereoPcm) {
   return out;
 }
 
-function attachUser(connection, userId) {
+// one persistent stream + decoder per channel member: subscribing only when
+// the "speaking" indicator fires races the first RTP packets and clips the
+// onset of every utterance (the accuracy regression vs loopback capture).
+// Manual end-behavior keeps the stream alive across the user's pauses.
+const subscriptions = new Map(); // userId -> {stream, decoder, name}
+const speakingStart = new Map(); // userId -> perf_now at last speaking start
+
+function subscribeUser(connection, userId) {
+  if (subscriptions.has(userId) || !connection) return;
   const guild = client.guilds.cache.get(connection.joinConfig.guildId);
   const name = guild ? displayName(guild, userId) : `user-${userId.slice(-4)}`;
-  console.log(`[voice] ${name} started speaking — subscribing`);
 
   const stream = connection.receiver.subscribe(userId, {
-    end: { behavior: EndBehaviorType.AfterInactivity, duration: INACTIVITY_END_MS },
+    end: { behavior: EndBehaviorType.Manual },
   });
-  // prism-media's OpusDecoder is a Transform stream: opus in, s16le PCM out
   const decoder = new prism.opus.Decoder({
     rate: 48000, channels: 2, frameSize: 960,
   });
+  subscriptions.set(userId, { stream, decoder, name });
+  console.log(`[voice] subscribed to ${name}`);
+
   let acc = new Float32Array(0);
   let sentSamples = 0;
   let packets = 0;
@@ -184,21 +193,17 @@ function attachUser(connection, userId) {
   decoder.on("error", (e) =>
     console.log(`[voice] ${name} decode ERROR: ${e.message || e}`));
 
-  const flush = () => {
-    if (acc.length) {
-      sendFrame(name, acc); // flush the sub-100 ms tail
-      acc = new Float32Array(0);
-    }
-  };
-
-  decoder.on("end", () => {
-    flush();
-    console.log(`[voice] ${name} stream ended ` +
-                `(${packets} pkts, ${(sentSamples / 16000).toFixed(1)}s sent)`);
-  });
-
   decoder.on("data", (pcm) => {
     packets++;
+    const started = speakingStart.get(userId);
+    if (started !== undefined) {
+      const deltaMs = Math.round(performance.now() - started);
+      if (deltaMs < 5000) {
+        console.log(`[voice] ${name}: speaking->audio delta ${deltaMs} ms` +
+                    (packets === 1 ? " (first packet of the stream)" : ""));
+      }
+      speakingStart.delete(userId);
+    }
     const chunk = toMono16k(pcm);
     const merged = new Float32Array(acc.length + chunk.length);
     merged.set(acc);
@@ -213,11 +218,26 @@ function attachUser(connection, userId) {
   stream.pipe(decoder);
 }
 
+function unsubscribeUser(userId) {
+  const sub = subscriptions.get(userId);
+  if (!sub) return;
+  try { sub.stream.destroy(); } catch { /* already gone */ }
+  try { sub.decoder.destroy(); } catch { /* already gone */ }
+  subscriptions.delete(userId);
+  speakingStart.delete(userId);
+  console.log(`[voice] unsubscribed ${sub.name}`);
+}
+
+function clearSubscriptions() {
+  for (const userId of [...subscriptions.keys()]) unsubscribeUser(userId);
+}
+
 // -------------------------------------------------------------- voice join
 let joinedChannelId = null;
 
 function joinChannel(channel) {
   console.log(`[sidecar] joining voice '${channel.name}' (${channel.id})`);
+  clearSubscriptions(); // stale streams belong to the old connection
   const connection = joinVoiceChannel({
     channelId: channel.id,
     guildId: channel.guildId,
@@ -231,10 +251,14 @@ function joinChannel(channel) {
   activeConnection = connection;
   joinedChannelId = channel.id;
   connection.on(VoiceConnectionStatus.Ready, () => {
-    console.log(`[sidecar] voice ready in '${channel.name}' — attaching ` +
-                `receiver (dave session: ${Boolean(connection.daveSession)})`);
-    const receiver = connection.receiver;
-    receiver.speaking.on("start", (userId) => attachUser(connection, userId));
+    console.log(`[sidecar] voice ready in '${channel.name}' — subscribing to ` +
+                `everyone (dave session: ${Boolean(connection.daveSession)})`);
+    // streams for people ALREADY in the channel; late joiners come through
+    // the voiceStateUpdate handler below
+    channel.members.forEach((m) => subscribeUser(connection, m.id));
+    // speaking indicator only powers the onset-delta diagnostic now
+    connection.receiver.speaking.on("start", (userId) =>
+      speakingStart.set(userId, performance.now()));
   });
   connection.on(VoiceConnectionStatus.Disconnected, async () => {
     // try to signal-resume before declaring death (discordjs guide pattern)
@@ -338,6 +362,19 @@ client.on(Events.InteractionCreate, async (i) => {
       await i.reply({ content: `Something broke: ${e.message}`, ephemeral: true })
         .catch(() => {});
     }
+  }
+});
+
+// keep per-user subscriptions in sync with channel membership
+client.on(Events.VoiceStateUpdate, (before, after) => {
+  const member = after.member ?? before.member;
+  if (!member || (activeConnection && member.id === client.user.id)) return;
+  const wasHere = before.channelId === joinedChannelId;
+  const isHere = after.channelId === joinedChannelId;
+  if (!wasHere && isHere) {
+    if (activeConnection) subscribeUser(activeConnection, member.id);
+  } else if (wasHere && !isHere) {
+    unsubscribeUser(member.id);
   }
 });
 
