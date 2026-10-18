@@ -66,6 +66,11 @@ DEFAULTS = {
     "cloudflare": {
         "client_id": "",      # CF-Access-Client-Id
         "client_secret": "",  # CF-Access-Client-Secret (shown once at creation)
+        # Optional token for the containerized cloudflared (compose profile
+        # "tunnel", start_tunnel.bat). Zero Trust -> Networks -> Tunnels ->
+        # Create tunnel -> Docker; the tunnel's public hostname must point
+        # at http://server:8765. Empty = tunnel container off.
+        "tunnel_token": "",
     },
     # --- speech-to-text ---
     # "asr_engine": "groq" = cloud Whisper large-v3-turbo via Groq (free tier,
@@ -83,6 +88,22 @@ DEFAULTS = {
         "model": "whisper-large-v3-turbo",
         "skip_partials": True,  # true = no partial subtitles on Groq (saves requests)
     },
+    # --- transcription batching (voice-bot sidecar, asr_engine="groq" only) ---
+    # Group members are MIXED into one transcription stream, so the whole
+    # group costs ONE Groq request per utterance (RPM saver for the free
+    # tier). Trade-off: a batched line has NO speaker label — a mixed stream
+    # cannot attribute words to individuals. Everyone not listed keeps their
+    # own labeled stream. Ignored outside asr_engine="groq"; the voice-bot
+    # reads this at startup, so restart it to apply:
+    #   docker compose restart voice-bot
+    #   "asr_groups": {
+    #     "english": ["Alice", "Bob"],
+    #     "japanese": {"members": ["Kenji"], "language": "ja"}
+    #   }
+    # Member matching is case-insensitive on Discord display names. The
+    # optional per-group "language" pins transcription for the batch
+    # (recommended: mixed streams misdetect more easily than solo ones).
+    "asr_groups": {},
     # --- Azure Speech-to-Text fallback ---
     # When set, Azure Speech catches Groq failures/quota (free tier 20 RPM)
     # before the pipeline falls back to local whisper. Create a "Speech"
@@ -158,8 +179,11 @@ DEFAULTS = {
     "backlog_max": 12,
     "backlog_keep": 3,
     # Domain vocabulary fed to Whisper as a hint — measurably fixes gaming
-    # loanword errors (탄약/포지션/ヒール/リロード...). Applied when the language
-    # is pinned or vote-locked; skipped on detection audits to stay unbiased.
+    # loanword errors (탄약/포지션/ヒール/リロード...). Game profile only: on
+    # non-gaming audio a long gaming vocab prompt gets hallucinated into the
+    # transcript. Applied when the language is pinned or vote-locked; skipped
+    # on detection audits to stay unbiased. Groq caps prompts at 224 tokens,
+    # so keep CJK entries short (the server trims those to 170 chars).
     "initial_prompts": {
         "ko": ("게임 음성 채팅. 오버워치: 아나, 키리코, 라인하르트, 바스티온, 레퍼, 윈스턴, 디바, 겐지, "
                "트레이서, 메이, 루시우, 젠야타, 궁극기, 탱커, 힐러, 딜러, 탄약, 리로드, 한타, "
@@ -208,7 +232,8 @@ DEFAULTS = {
     },
     "vad": {
         "on_threshold": 0.5,            # speech prob to start an utterance
-        "off_threshold": 0.35,          # speech prob counting as silence
+        "off_threshold": 0.35,          # once speaking, close only below this
+                                        # (the 0.35-0.5 band keeps speech alive)
         "min_speech_ms": 250,           # ignore blips shorter than this
         "min_silence_ms": 480,          # close the utterance after this much silence (latency)
         "max_utterance_s": 9.0,         # hard-cap length (emits mid-speech when hit)

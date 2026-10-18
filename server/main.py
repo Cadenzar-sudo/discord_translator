@@ -168,6 +168,7 @@ async def amain(cfg, args):
     manager = SpeakerManager(cfg, seg_q, paused)
     registry = TargetRegistry()
     state = {"ready": False}
+    worker = None  # bound after model load; set_mode guards on it
 
     def status_provider():
         return {"mode": cfg.get("profile", "chat"), "channel": "loopback",
@@ -182,7 +183,9 @@ async def amain(cfg, args):
         """Called on the loop thread when a viewer toggles chat/game."""
         cfg["profile"] = profile
         apply_profile(cfg)
-        if worker.transcriber:  # local whisper may be unloaded under Groq ASR
+        # worker is None until models finish loading; a viewer connecting
+        # during that window must not crash the handler
+        if worker is not None and worker.transcriber:
             worker.transcriber.beam_size = int(cfg["beam_size"])
         print(f"[mode] {profile.upper()} mode (silence "
               f"{cfg['vad']['min_silence_ms']}ms, beam {cfg['beam_size']})")

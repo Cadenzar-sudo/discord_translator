@@ -112,17 +112,26 @@ class SubtitleServer:
 
     async def _audio_handler(self, request):
         """Audio shipper in: hello JSON, then BINARY frames
-        [2B name-len][utf8 name][float32-LE mono 16 kHz samples]. One
-        shipper at a time — a new connection replaces the old."""
+        [2B uid-len][utf8 uid][2B name-len][utf8 name][float32-LE mono 16 kHz
+        samples]. The uid keys the speaker's VAD session (the Discord
+        snowflake from the voice-bot sidecar); the name is the display
+        label. Legacy shippers that omit the uid still parse (uid == name).
+        One shipper at a time — a new connection replaces the old."""
         if not self._authorized(request):
             raise web.HTTPUnauthorized(text="bad or missing token")
         ws = web.WebSocketResponse(heartbeat=25.0)
         await ws.prepare(request)
 
-        if self._audio_ws is not None and not self._audio_ws.closed:
+        prev = self._audio_ws
+        if prev is not None and not prev.closed:
+            # take over FIRST: the old handler's cleanup then sees it was
+            # replaced and must not flush speaker sessions the new shipper
+            # is already feeding
+            self._audio_ws = ws
             print("[audio] replacing existing shipper connection")
-            await self._audio_ws.close(code=4001, message=b"replaced")
-        self._audio_ws = ws
+            await prev.close(code=4001, message=b"replaced")
+        else:
+            self._audio_ws = ws
 
         try:
             hello = await asyncio.wait_for(ws.receive_json(), timeout=10.0)
@@ -142,6 +151,7 @@ class SubtitleServer:
 
         uids: set[str] = set()
         bad = 0
+        legacy = 0
         try:
             async for msg in ws:
                 if msg.type != WSMsgType.BINARY:
@@ -153,25 +163,53 @@ class SubtitleServer:
                         print("[audio] malformed frame — dropping (further "
                               "frame errors stay silent)")
                     continue
-                name, block = frame
-                uids.add(name)
-                self.audio_sink.push(name, name, block)
+                uid, name, block = frame
+                if uid == name:
+                    legacy += 1
+                    if legacy == 1:
+                        print("[audio] legacy frame format (no uid) — "
+                              "update the audio shipper")
+                uids.add(uid)
+                self.audio_sink.push(uid, name, block)
         finally:
+            replaced = self._audio_ws is not None and self._audio_ws is not ws
             if self._audio_ws is ws:
                 self._audio_ws = None
                 self.audio_client = None
-            try:
-                self.audio_sink.disconnect(uids)
-            except Exception as e:
-                print(f"[audio] sink flush failed: {e}")
-            print(f"[audio] shipper disconnected ({client}); flushed "
-                  f"{len(uids)} speaker session(s)")
+            if replaced:
+                print(f"[audio] {client} replaced — speaker sessions "
+                      f"handed over untouched")
+            else:
+                try:
+                    self.audio_sink.disconnect(uids)
+                except Exception as e:
+                    print(f"[audio] sink flush failed: {e}")
+                print(f"[audio] shipper disconnected ({client}); flushed "
+                      f"{len(uids)} speaker session(s)")
         return ws
 
     @staticmethod
     def _parse_audio_frame(data: bytes):
-        if len(data) < 3:
+        """[2B uid-len][utf8 uid][2B name-len][utf8 name][f32-LE samples].
+        Legacy shippers sent the name where the uid now sits; those still
+        parse via the fallback (uid == name)."""
+        if len(data) < 4:
             return None
+        uid_len = int.from_bytes(data[:2], "little")
+        if uid_len <= 64:
+            name_off = 2 + uid_len
+            if len(data) >= name_off + 2:
+                name_len = int.from_bytes(data[name_off:name_off + 2],
+                                          "little")
+                s_off = name_off + 2 + name_len
+                if (name_len <= 128 and 0 < len(data) - s_off
+                        and (len(data) - s_off) % 4 == 0):
+                    uid = data[2:name_off].decode("utf-8", "replace")
+                    name = data[name_off + 2:s_off].decode("utf-8", "replace")
+                    # writable copy: frombuffer's array is read-only
+                    return uid, name, np.frombuffer(
+                        data[s_off:], dtype="<f4").astype(np.float32)
+        # legacy frame: [2B name-len][utf8 name][samples]
         name_len = int.from_bytes(data[:2], "little")
         if name_len > 128 or len(data) < 2 + name_len:
             return None
@@ -179,8 +217,7 @@ class SubtitleServer:
         if not samples or len(samples) % 4:
             return None
         name = data[2:2 + name_len].decode("utf-8", "replace")
-        # writable copy: frombuffer's array is read-only
-        return name, np.frombuffer(samples, dtype="<f4").astype(np.float32)
+        return name, name, np.frombuffer(samples, dtype="<f4").astype(np.float32)
 
     def _authorized(self, request) -> bool:
         """App-token check. The token normally arrives as an Authorization:

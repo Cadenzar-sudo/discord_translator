@@ -1,9 +1,9 @@
 """Per-speaker sessions: one VadSegmenter per Discord user.
 
-The sink (voice_receiver.py) pushes 16 kHz mono blocks keyed by Discord user;
-each user gets their own audio queue + VAD segmenter thread, and every segment
-they emit is tagged with the speaker before landing in the shared seg_q the
-PipelineWorker drains.
+The sink (the /audio WS handler via ShipperSink) pushes 16 kHz mono blocks
+keyed by Discord user; each user gets their own audio queue + VAD segmenter
+thread, and every segment they emit is tagged with the speaker before landing
+in the shared seg_q the PipelineWorker drains.
 """
 
 import queue
@@ -62,13 +62,22 @@ class SpeakerManager:
         self._sessions: dict[object, SpeakerSession] = {}
         self._counter = 0  # synthetic ids for fake speakers (test mode)
 
+    @staticmethod
+    def _display_label(name: str) -> str:
+        """batch:<group> sessions transcribe UNLABELED: the group's members
+        are mixed into one stream, so no individual speaker can be
+        attributed. The full key stays on the session for identity (status,
+        per-group language pins)."""
+        return "" if name.startswith("batch:") else name
+
     def ensure(self, user_id, name: str) -> queue.Queue:
         """Get (creating if needed) the audio queue a speaker's blocks go to."""
         with self._lock:
             s = self._sessions.get(user_id)
             if s is None:
                 audio_q: "queue.Queue[np.ndarray]" = queue.Queue(maxsize=200)
-                seg_target = _TaggedSegQueue(self.seg_q, user_id, name)
+                seg_target = _TaggedSegQueue(self.seg_q, user_id,
+                                             self._display_label(name))
                 segmenter = VadSegmenter(audio_q, seg_target, self.cfg["vad"],
                                          self.paused)
                 segmenter.start()
@@ -77,15 +86,22 @@ class SpeakerManager:
                 print(f"[speakers] Session started: {name}")
             elif s.name != name:
                 s.name = name
-                s.segmenter.seg_q.speaker_name = name  # segmenter holds the tagged queue
+                s.segmenter.seg_q.speaker_name = self._display_label(name)
             return s.audio_q
 
     def push(self, user_id, name: str, block: np.ndarray):
         q = self.ensure(user_id, name)
+        if q.full():
+            try:
+                q.get_nowait()  # this speaker's VAD stalled: drop the OLDEST
+                # block so live audio keeps flowing (drop-newest would mute
+                # the present while replaying a stale buffer)
+            except queue.Empty:
+                pass
         try:
             q.put_nowait(block)
         except queue.Full:
-            pass  # this speaker's VAD stalled; drop the block
+            pass
 
     def remove(self, user_id, flush: bool = True):
         """Stop a speaker's segmenter. flush=True (test mode / leaving) waits

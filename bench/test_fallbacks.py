@@ -87,7 +87,7 @@ def live_tests(cfg: dict):
                              az.get("endpoint") or "api.cognitive.microsofttranslator.com")
         t0 = time.monotonic()
         out = tr.translate_multi(["안녕하세요 친구들, 오늘 게임 재미있었어요"],
-                                 "kor_Latn", ["eng_Latn"])
+                                 "kor_Hang", ["eng_Latn"])
         dt = time.monotonic() - t0
         check("live: Azure Translator ko->en",
               bool(out.get("eng_Latn", "").strip()),

@@ -4,7 +4,9 @@
  * Joins a Discord voice channel as a bot (DAVE E2EE handled by
  * @discordjs/voice + @snazzah/davey), decodes each speaking user to mono
  * 16 kHz PCM, and streams it to the translator server's /audio endpoint as
- * [2-byte name-len][utf8 display name][float32-LE samples] binary frames.
+ * [2B uid-len][utf8 user id][2B name-len][utf8 display name][float32-LE
+ * samples] binary frames (the uid keys the speaker's session server-side,
+ * so two members with the same display name stay separate).
  *
  * Config comes from the SAME config.json the Python server uses (mount it):
  *   discord.token, discord.guild_id (set = instant slash commands),
@@ -40,6 +42,9 @@ const FRAME_SAMPLES = 1600; // 100 ms of mono 16 kHz float32 per WS frame
 
 const WATCHDOG_MS = 15_000;
 const MAX_QUEUE = 40; // ~4 s of frames before drop-oldest
+// server fell this far behind while connected: drop live frames instead of
+// letting ws's internal send buffer grow without bound (OOM on long soaks)
+const MAX_BUFFERED = 262144;
 const HEALTH_PORT = process.env.HEALTH_PORT || 8766;
 
 // ------------------------------------------------------------------ config
@@ -64,7 +69,6 @@ const SERVER_TOKEN = (cfg.server && cfg.server.access_token) || "";
 const AUDIO_URL =
   (cfg.audio_shipper && cfg.audio_shipper.url) ||
   `ws://127.0.0.1:${(cfg.server && cfg.server.port) || 8765}/audio`;
-const GUILD_ID = cfg.discord && cfg.discord.guild_id;
 const CHANNEL_ID = cfg.discord_web && cfg.discord_web.channel_id;
 const AUTO_JOIN = !!(cfg.discord_web && cfg.discord_web.auto_join);
 
@@ -81,6 +85,14 @@ try {
   console.error("[sidecar] WARNING: @snazzah/davey not installed — receive " +
     "will fail on DAVE-enforced channels (npm i @snazzah/davey)");
 }
+
+// ------------------------------------------------- transcription batching
+// asr_groups mixes listed members into ONE stream: one Groq request per
+// utterance for the whole group (RPM saver for the free tier). Batched
+// frames carry uid `batch:<group>` + empty display name — the server keeps
+// them as unlabeled subtitles. groq-only: other engines have no RPM gate.
+const { parseGroups, Accumulators } = require("./groups");
+const GROUPS = parseGroups(cfg.asr_engine, cfg.asr_groups);
 
 // ------------------------------------------------------------- audio link
 let ws = null;
@@ -123,16 +135,20 @@ function flushQueue() {
   while (sendQueue.length) ws.send(sendQueue.shift());
 }
 
-function sendFrame(name, float32) {
+function sendFrame(uid, name, float32) {
+  let uidBytes = Buffer.from(uid, "utf8");
+  if (uidBytes.length > 64) uidBytes = uidBytes.subarray(0, 64);
   let nameBytes = Buffer.from(name, "utf8");
   if (nameBytes.length > 128) nameBytes = nameBytes.subarray(0, 128);
-  const header = Buffer.alloc(2);
-  header.writeUInt16LE(nameBytes.length, 0);
+  const header = Buffer.alloc(4);
+  header.writeUInt16LE(uidBytes.length, 0);
+  header.writeUInt16LE(nameBytes.length, 2);
   const payload = Buffer.concat([
-    header, nameBytes,
+    header, uidBytes, nameBytes,
     Buffer.from(float32.buffer, float32.byteOffset, float32.byteLength),
   ]);
   if (ws && ws.readyState === WebSocket.OPEN) {
+    if (ws.bufferedAmount > MAX_BUFFERED) return; // server behind: drop
     ws.send(payload);
     return;
   }
@@ -167,13 +183,21 @@ function toMono16k(stereoPcm) {
 // the "speaking" indicator fires races the first RTP packets and clips the
 // onset of every utterance (the accuracy regression vs loopback capture).
 // Manual end-behavior keeps the stream alive across the user's pauses.
-const subscriptions = new Map(); // userId -> {stream, decoder, name}
+const subscriptions = new Map(); // userId -> {stream, decoder, name, batchUid}
 const speakingStart = new Map(); // userId -> perf_now at last speaking start
+// per-output-stream 100 ms accumulators: one per ungrouped user, one SHARED
+// per batch group (members' decoded chunks merge into the same entry)
+const streamAcc = new Accumulators(FRAME_SAMPLES);
 
 function subscribeUser(connection, userId) {
   if (subscriptions.has(userId) || !connection) return;
   const guild = client.guilds.cache.get(connection.joinConfig.guildId);
   const name = guild ? displayName(guild, userId) : `user-${userId.slice(-4)}`;
+  const group = GROUPS.get(name.trim().toLowerCase()) || null;
+  // grouped members share one VAD session per group, labeled batch:<group>;
+  // the empty display name makes their subtitle lines unlabeled
+  const uid = group ? `batch:${group.key}` : userId;
+  const label = group ? "" : name;
 
   const stream = connection.receiver.subscribe(userId, {
     end: { behavior: EndBehaviorType.Manual },
@@ -181,11 +205,10 @@ function subscribeUser(connection, userId) {
   const decoder = new prism.opus.Decoder({
     rate: 48000, channels: 2, frameSize: 960,
   });
-  subscriptions.set(userId, { stream, decoder, name });
-  console.log(`[voice] subscribed to ${name}`);
+  subscriptions.set(userId, { stream, decoder, name, batchUid: group ? uid : null });
+  console.log(`[voice] subscribed to ${name}` +
+              (group ? ` -> batch '${group.key}'` : ""));
 
-  let acc = new Float32Array(0);
-  let sentSamples = 0;
   let packets = 0;
 
   stream.on("error", (e) =>
@@ -204,16 +227,7 @@ function subscribeUser(connection, userId) {
       }
       speakingStart.delete(userId);
     }
-    const chunk = toMono16k(pcm);
-    const merged = new Float32Array(acc.length + chunk.length);
-    merged.set(acc);
-    merged.set(chunk, acc.length);
-    acc = merged;
-    while (acc.length >= FRAME_SAMPLES) {
-      sendFrame(name, acc.subarray(0, FRAME_SAMPLES));
-      acc = acc.subarray(FRAME_SAMPLES);
-      sentSamples += FRAME_SAMPLES;
-    }
+    streamAcc.feed(uid, label, toMono16k(pcm), sendFrame);
   });
   stream.pipe(decoder);
 }
@@ -225,6 +239,9 @@ function unsubscribeUser(userId) {
   try { sub.decoder.destroy(); } catch { /* already gone */ }
   subscriptions.delete(userId);
   speakingStart.delete(userId);
+  // a solo stream's accumulator dies with the user; a batch accumulator
+  // stays — its remaining members still feed it
+  if (!sub.batchUid) streamAcc.drop(userId);
   console.log(`[voice] unsubscribed ${sub.name}`);
 }
 

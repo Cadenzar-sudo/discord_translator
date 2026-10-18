@@ -114,6 +114,27 @@ shipper's PortAudio capture), so the machine running Version A needs:
    - OAuth2 → URL Generator → scopes `bot` + `applications.commands`,
      perms `View Channels` + `Connect` → open the URL → pick your server.
 
+### Transcription batching (`asr_groups`) — Groq RPM saver
+
+Put same-language English speakers into one group and their audio is MIXED
+into a single transcription stream: the whole group costs **one Groq request
+per utterance** instead of one per person. Batched lines show **no speaker
+label** (a mixed stream can't attribute words to individuals); everyone not
+listed keeps their own labeled stream — so your Korean speakers stay solo.
+
+```json
+"asr_groups": {
+  "english": ["Alice", "Bob"],
+  "japanese": { "members": ["Kenji"], "language": "ja" }
+}
+```
+
+Rules: member matching is case-insensitive on Discord display names; the
+optional per-group `language` pins transcription (recommended — mixed
+streams misdetect more easily); groups are honored **only when
+`asr_engine` is `"groq"`**; the voice-bot reads this at startup, so apply
+changes with `docker compose restart voice-bot`.
+
 ### One-click: `setup_gpu.bat`
 
 Double-click and it does the whole Docker bring-up: creates
@@ -149,6 +170,27 @@ Run it once interactively; when it works, install it as a service so it
 survives reboots: write a `config.yml` (see `cloudflared tunnel --help`)
 then `cloudflared service install`. Friends' setup code becomes
 `wss://subs.yourdomain.com/ws#t=TOKEN` — regenerate it with `server\setup.bat`.
+
+**Or run the tunnel as a container** (no native install; works with both
+versions — start and stop it independently of the bot, e.g. loopback +
+tunnel when the voice-bot is down):
+
+```bat
+:: one-time: Zero Trust dashboard -> Networks -> Tunnels -> Create tunnel
+:: -> Docker, copy the token, paste it into docker-data\config.json under
+:: "cloudflare" -> "tunnel_token", and add a Public Hostname for the tunnel:
+::   subdomain/domain: subs.yourdomain.com
+::   service:          HTTP -> http://server:8765
+start_tunnel.bat     :: starts the cloudflared container
+stop_tunnel.bat      :: removes it — server/bot keep running
+```
+
+The container joins the compose network, so the ingress service is
+`http://server:8765` (the `server` service name resolves over Docker DNS);
+no extra ports are published. The token is copied from `config.json` into
+`.env` (gitignored) for compose. Zero Trust service-token lockdown below
+applies unchanged — it protects the hostname at the edge, regardless of
+what runs the tunnel.
 
 The tunnel alone is **transport-encrypted but not authenticated at the
 edge**: anyone who guesses/finds the hostname can reach the app token check

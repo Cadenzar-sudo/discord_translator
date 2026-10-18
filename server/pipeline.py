@@ -26,6 +26,10 @@ GROQ_ERROR_COOLDOWN_S = 15.0
 
 import numpy as np
 
+# light import (translator.py defers ctranslate2/transformers to __init__):
+# the pin guard needs the ISO->NLLB table at detection time
+from translator import whisper_to_nllb
+
 APP_DIR = Path(__file__).resolve().parent
 TARGET_RATE = 16000
 
@@ -85,6 +89,7 @@ class PipelineWorker(threading.Thread):
         self._lang_hist: dict = {}
         self._pinned: dict = {}
         self._counters: dict = {}
+        self._flip_streak: dict = {}  # sid -> lang awaiting a confirming 2nd detection
         self._recent: deque = deque(maxlen=60)  # (partial, latency_s) of finals
 
     # ------------------------------------------------------------- languages
@@ -99,9 +104,22 @@ class PipelineWorker(threading.Thread):
             return lang
         return None
 
+    def _group_language(self, sid) -> str | None:
+        """Pinned transcription language for a batch group, if configured:
+        sid 'batch:<group>' -> asr_groups[<group>].language."""
+        if not isinstance(sid, str) or not sid.startswith("batch:"):
+            return None
+        group = (self.cfg.get("asr_groups") or {}).get(sid.split(":", 1)[1])
+        if isinstance(group, dict):
+            return group.get("language") or None
+        return None
+
     def _next_language(self, sid) -> str | None:
         if self.cfg.get("language"):
             return self.cfg["language"]
+        pin = self._group_language(sid)
+        if pin:
+            return pin  # batch group with a pinned language: never re-detect
         self._counters[sid] = self._counters.get(sid, 0) + 1
         if self._pinned.get(sid) is None or self._counters[sid] % 4 == 0:
             return None  # auto-detect
@@ -110,17 +128,41 @@ class PipelineWorker(threading.Thread):
     def _record_detection(self, sid, lang: str, prob: float):
         if self.cfg.get("language"):
             return  # globally pinned: no voting
+        if self._group_language(sid):
+            return  # batch group with a pinned language: no voting
+        if not lang or whisper_to_nllb(lang) is None:
+            return  # unmappable detection: never vote or pin it (this
+            # utterance passes through raw, and no bogus language code can
+            # poison the engines on later calls)
         hist = self._lang_hist.setdefault(sid, deque(maxlen=12))
         pinned = self._pinned.get(sid)
         if pinned is None:
             hist.append((lang, prob, 1.0))
             locked = self._vote_language(sid)
-            if locked and locked != pinned:
+            if locked:
                 self._pinned[sid] = locked
-        elif lang != pinned and prob >= 0.75:
+            self._flip_streak.pop(sid, None)
+        elif lang == pinned:
+            self._flip_streak.pop(sid, None)
+        elif prob >= 0.90:
+            # near-certain: switch immediately. Cloud engines report a
+            # constant confidence (Groq/Azure 0.8), so anything below this
+            # needs a confirming second detection first
             self._pinned[sid] = lang
             hist.clear()
             hist.append((lang, prob, 1.0))
+            self._flip_streak.pop(sid, None)
+        elif prob >= 0.75:
+            # plausible but not certain: one misread must not force the wrong
+            # language onto the next utterances — require two in a row
+            if self._flip_streak.get(sid) == lang:
+                self._pinned[sid] = lang
+                hist.clear()
+                hist.append((lang, prob, 1.0))
+                self._flip_streak.pop(sid, None)
+            else:
+                self._flip_streak[sid] = lang
+        # below 0.75: too weak to touch the pin
 
     # --------------------------------------------------------------- models
     def _load_local_transcriber(self):
@@ -243,7 +285,7 @@ class PipelineWorker(threading.Thread):
     # ----------------------------------------------------------------- run
     def run(self):
         from transcriber import is_acceptable
-        from translator import apply_glossary, apply_names, whisper_to_nllb
+        from translator import apply_glossary, apply_names
 
         pending: list[dict] = []
         while not self.stop_event.is_set():

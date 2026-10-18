@@ -2,10 +2,11 @@
 
 Captures the loopback device (VB-Cable) with the same AudioCapture the native
 server uses and streams blocks to the translator server's /audio endpoint as
-[2-byte name-len][utf8 name][float32-LE samples] binary frames — the same
-protocol the Node voice-bot sidecar speaks. Auto-reconnects every 2 s; when
-the connection is down, live frames are dropped (the fallback only matters
-while the server is reachable anyway).
+[2B uid-len][utf8 uid][2B name-len][utf8 name][float32-LE samples] binary
+frames — the same protocol the Node voice-bot sidecar speaks. The mixed
+stream is one speaker: uid is "loopback-<name>", name the display label.
+Auto-reconnects every 2 s; when the connection is down, live frames are
+dropped (the fallback only matters while the server is reachable anyway).
 
 Usage (server venv, on the Windows host with VB-Cable):
   python audio_shipper.py                       # live capture
@@ -34,9 +35,12 @@ from config import load_config  # noqa: E402
 TARGET_RATE = 16000
 
 
-def build_frame(name: str, block) -> bytes:
+def build_frame(uid: str, name: str, block) -> bytes:
+    ub = uid.encode("utf-8")[:64]
     nb = name.encode("utf-8")[:128]
-    return len(nb).to_bytes(2, "little") + nb + block.astype("<f4").tobytes()
+    return (len(ub).to_bytes(2, "little") + ub
+            + len(nb).to_bytes(2, "little") + nb
+            + block.astype("<f4").tobytes())
 
 
 async def ship_ws(url: str, token: str, hello: dict, get_block, stop_event):
@@ -59,7 +63,10 @@ async def ship_ws(url: str, token: str, hello: dict, get_block, stop_event):
                 block = await loop.run_in_executor(None, get_block)
                 if block is None:
                     break
-                await ws.send_bytes(build_frame(hello["speaker"], block))
+                if len(block) == 0:
+                    continue  # capture stall: don't ship an empty frame
+                await ws.send_bytes(build_frame(
+                    f"loopback-{hello['speaker']}", hello["speaker"], block))
             await ws.close()
 
 

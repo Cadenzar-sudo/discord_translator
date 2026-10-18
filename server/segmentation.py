@@ -5,6 +5,7 @@ utterances (numpy arrays) once silence closes them (or a max-length cap hits).
 """
 
 import threading
+import time
 
 import numpy as np
 
@@ -113,36 +114,45 @@ class VadSegmenter(threading.Thread):
         if p >= on:
             self._silence_frames = 0
             self._cur.append(win)
-            if not self._speaking:
-                self._speech_frames += 1
-                if self._speech_frames >= min_speech:
-                    self._speaking = True
-            else:
-                self._speech_frames += 1
-            if len(self._cur) >= max_frames:
-                # constant talker: cap the utterance mid-speech and start a new one
+            self._speech_frames += 1
+            if not self._speaking and self._speech_frames >= min_speech:
+                self._speaking = True
+        elif p >= off and (self._speaking or self._speech_frames > 0):
+            # hysteresis band (off..on): keeps an open or tentative utterance
+            # alive — soft trailing speech no longer counts as silence — but a
+            # mid-band frame never starts one or advances the onset counter
+            self._silence_frames = 0
+            self._cur.append(win)
+        elif self._speaking:
+            # below off: real silence; trailing frames are trimmed by _emit
+            self._silence_frames += 1
+            self._cur.append(win)
+            if (self._silence_frames >= min_silence
+                    or len(self._cur) >= max_frames):
                 self._emit(pad_frames)
-                return
-            # streaming: publish a partial while the person keeps talking
-            if self._speaking and len(self._cur) >= partial_min:
-                self._since_partial += 1
-                if self._since_partial >= partial_every:
-                    self._emit_partial()
+            return
         else:
+            if self._speech_frames > 0:
+                # tentative blip that faded out: discard
+                self._speech_frames = 0
+                self._cur = []
+            self._prebuf.append(win)
+            if len(self._prebuf) > pad_frames:
+                self._prebuf.pop(0)
+            return
+        if len(self._cur) >= max_frames:
+            # constant talker: cap the utterance mid-speech and start a new one
             if self._speaking:
-                self._silence_frames += 1
-                self._cur.append(win)
-                if (self._silence_frames >= min_silence
-                        or len(self._cur) >= max_frames):
-                    self._emit(pad_frames)
-            else:
-                if self._speech_frames > 0:
-                    # tentative blip that faded out: discard
-                    self._speech_frames = 0
-                    self._cur = []
-                self._prebuf.append(win)
-                if len(self._prebuf) > pad_frames:
-                    self._prebuf.pop(0)
+                self._emit(pad_frames)
+            else:  # tentative start that never crossed the open threshold
+                self._speech_frames = 0
+                self._cur = []
+            return
+        # streaming: publish a partial while the person keeps talking
+        if self._speaking and len(self._cur) >= partial_min:
+            self._since_partial += 1
+            if self._since_partial >= partial_every:
+                self._emit_partial()
 
     def _audio_so_far(self) -> np.ndarray:
         frames = list(self._prebuf) + list(self._cur)
@@ -154,7 +164,8 @@ class VadSegmenter(threading.Thread):
         if len(audio) < WINDOW * 5:
             return
         try:
-            self.seg_q.put_nowait({"audio": audio, "uid": self._uid, "partial": True})
+            self.seg_q.put_nowait({"audio": audio, "uid": self._uid,
+                                   "partial": True, "t_vad": time.monotonic()})
         except Exception:
             pass  # worker backed up: skip this partial
 
@@ -171,7 +182,9 @@ class VadSegmenter(threading.Thread):
         self._reset_segment_state()
         if len(audio) >= WINDOW * 5:  # <160 ms of audio is never speech worth decoding
             try:
-                self.seg_q.put_nowait({"audio": audio, "uid": uid, "partial": False})
+                self.seg_q.put_nowait({"audio": audio, "uid": uid,
+                                       "partial": False,
+                                       "t_vad": time.monotonic()})
             except Exception:
                 pass  # worker backed up: drop this utterance
 

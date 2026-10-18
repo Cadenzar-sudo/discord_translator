@@ -7,7 +7,7 @@ services:
     stop_grace_period: 25s
     restart: unless-stopped
     ports:
-      - "8765:8765"
+      - "127.0.0.1:8765:8765"
     volumes:
       # config holds tokens: lives outside git, created from server/config.json
       - ./docker-data/config.json:/data/config.json
@@ -29,3 +29,22 @@ services:
     # health probe, local debugging only
     ports:
       - "127.0.0.1:8766:8766"
+
+  # Optional internet exposure for remote viewers (works with BOTH versions:
+  # bot and loopback). Profile-gated: plain `docker compose up -d` never
+  # starts it — start_tunnel.bat does. The token comes from
+  # docker-data/config.json ("cloudflare" -> "tunnel_token"), copied into
+  # .env by start_tunnel.bat. The tunnel's public hostname must point at
+  # http://server:8765 (set once in the Zero Trust dashboard) — cloudflared
+  # resolves the `server` service over the compose network, so this service
+  # publishes no ports.
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    init: true
+    restart: unless-stopped
+    profiles: ["tunnel"]
+    depends_on:
+      - server
+    environment:
+      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN:-}
+    command: ["tunnel", "--no-autoupdate", "run"]

@@ -23,3 +23,6 @@ server/setup_code.txt
 docker-data/
 sidecar/node_modules/
 sidecar/package-lock.json.bak
+
+# cloudflared tunnel token (written by start_tunnel.bat)
+.env

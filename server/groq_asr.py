@@ -9,6 +9,7 @@ config.json under "groq".
 """
 
 import io
+import re
 import wave
 from types import SimpleNamespace
 
@@ -16,6 +17,8 @@ import numpy as np
 import requests
 
 GROQ_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
+
+_CJK_RE = re.compile(r"[\uac00-\ud7af\u3040-\u30ff\u4e00-\u9fff]")
 
 # Groq verbose_json reports the language as a full name ("Korean") — map the
 # names whisper knows to ISO-639-1 codes for the pipeline.
@@ -28,6 +31,15 @@ _LANG_NAME_TO_CODE = {
     "czech": "cs", "swedish": "sv", "finnish": "fi", "norwegian": "no",
     "danish": "da", "hebrew": "he",
 }
+
+
+def _cap_prompt(prompt: str) -> str:
+    """Groq enforces the OpenAI Whisper prompt cap of 224 TOKENS with a
+    validation error (no silent truncation). CJK runs ~1 token per char
+    (measured on large-v3-turbo: the ko game prompt is 236 chars = 197
+    tokens), so CJK prompts are capped harder to stay under the limit."""
+    limit = 170 if _CJK_RE.search(prompt) else 224
+    return prompt[:limit]
 
 
 def _to_wav(audio: np.ndarray) -> io.BytesIO:
@@ -54,12 +66,15 @@ class GroqASR:
 
     def _lang_code(self, lang_name: str | None) -> str | None:
         """Groq's verbose_json reports the language as a full name ('Korean'),
-        but the pipeline needs the ISO-639-1 code ('ko')."""
+        but the pipeline needs the ISO-639-1 code ('ko'). Unmappable names
+        become None: the pipeline skips them for voting/pinning instead of
+        propagating a string the engines would reject as a language arg."""
         if not lang_name:
             return None
         code = _LANG_NAME_TO_CODE.get(lang_name.lower())
-        return code if code else (lang_name.lower() if len(lang_name) == 2
-                                  else lang_name)
+        if code:
+            return code
+        return lang_name.lower() if len(lang_name) == 2 else None
 
     def transcribe(self, audio, translate: bool = False,
                    language: str | None = None,
@@ -72,7 +87,7 @@ class GroqASR:
         if language:
             data["language"] = language
         if initial_prompt:
-            data["prompt"] = initial_prompt[:224]  # API prompt cap
+            data["prompt"] = _cap_prompt(initial_prompt)
         resp = requests.post(
             GROQ_URL,
             files={"file": ("audio.wav", buf, "audio/wav")},

@@ -60,8 +60,11 @@ async def ship_file(port: int, token: str, wav: Path, speaker: str):
     pcm = np.frombuffer(audio, np.int16).astype(np.float32) / 32767.0
 
     def frame(block: "np.ndarray") -> bytes:
+        ub = f"loopback-{speaker}".encode("utf-8")
         nb = speaker.encode("utf-8")
-        return len(nb).to_bytes(2, "little") + nb + block.astype("<f4").tobytes()
+        return (len(ub).to_bytes(2, "little") + ub
+                + len(nb).to_bytes(2, "little") + nb
+                + block.astype("<f4").tobytes())
 
     step = 16000 // 10  # 100 ms
     async with aiohttp.ClientSession() as s:

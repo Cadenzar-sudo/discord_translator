@@ -54,7 +54,8 @@ async def ship(session: aiohttp.ClientSession, port: int, token: str,
 
     async def send(c):
         await ws.send_bytes(
-            len(b"GapTest").to_bytes(2, "little") + b"GapTest"
+            len(b"gaptest").to_bytes(2, "little") + b"gaptest"
+            + len(b"GapTest").to_bytes(2, "little") + b"GapTest"
             + c.astype("<f4").tobytes())
 
     async with session.ws_connect(f"http://127.0.0.1:{port}/audio",
