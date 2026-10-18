@@ -1,0 +1,31 @@
+services:
+  server:
+    build:
+      context: ./server
+    image: translator-server
+    init: true
+    stop_grace_period: 25s
+    restart: unless-stopped
+    ports:
+      - "8765:8765"
+    volumes:
+      # config holds tokens: lives outside git, created from server/config.json
+      - ./docker-data/config.json:/data/config.json
+      # point TRANSLATOR_MODELS at an existing model dir to skip the
+      # first-run HuggingFace download (set in start_bot.bat / environment)
+      - ${TRANSLATOR_MODELS:-./server/models}:/models
+
+  voice-bot:
+    build:
+      context: ./sidecar
+    image: translator-voice-bot
+    init: true
+    stop_grace_period: 15s
+    restart: unless-stopped
+    depends_on:
+      - server
+    volumes:
+      - ./docker-data/config.json:/data/config.json:ro
+    # health probe, local debugging only
+    ports:
+      - "127.0.0.1:8766:8766"

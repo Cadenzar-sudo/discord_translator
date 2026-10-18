@@ -1,0 +1,10 @@
+venv/
+models/
+__pycache__/
+*.pyc
+*.log
+debug_audio/
+discord_web_profile/
+config.json
+Dockerfile
+.dockerignore

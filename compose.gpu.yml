@@ -1,0 +1,15 @@
+# GPU variant: docker compose -f compose.yml -f compose.gpu.yml up -d --build
+# Needs Docker Desktop with WSL2 + an NVIDIA driver that supports WSL CUDA.
+services:
+  server:
+    build:
+      context: ./server
+      args:
+        CUDA: gpu
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

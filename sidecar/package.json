@@ -1,0 +1,18 @@
+{
+  "name": "voice-bot-sidecar",
+  "version": "1.0.0",
+  "description": "Discord voice receiver sidecar: joins voice with DAVE E2EE, streams per-speaker 16 kHz PCM to the translator server's /audio endpoint",
+  "private": true,
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@discordjs/opus": "^0.10.0",
+    "@discordjs/voice": "^0.19.2",
+    "@snazzah/davey": "^0.1.12",
+    "discord.js": "^14.16.3",
+    "opusscript": "^0.1.1",
+    "prism-media": "^1.3.5"
+  }
+}
