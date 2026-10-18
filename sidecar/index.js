@@ -208,34 +208,63 @@ function subscribeUser(connection, userId) {
   const stream = connection.receiver.subscribe(userId, {
     end: { behavior: EndBehaviorType.Manual },
   });
-  const decoder = new prism.opus.Decoder({
-    rate: 48000, channels: 2, frameSize: 960,
-  });
-  subscriptions.set(userId, { stream, decoder, name, batchUid: group ? uid : null });
+  subscriptions.set(userId, { stream, decoder: null, name, batchUid: group ? uid : null });
   console.log(`[voice] subscribed to ${name}` +
               (group ? ` -> batch '${group.key}'` : ""));
 
   let packets = 0;
+  let consecutiveErrors = 0;
 
   stream.on("error", (e) =>
     console.log(`[voice] ${name} stream ERROR: ${e.message || e}`));
-  decoder.on("error", (e) =>
-    console.log(`[voice] ${name} decode ERROR: ${e.message || e}`));
 
-  decoder.on("data", (pcm) => {
-    packets++;
-    const started = speakingStart.get(userId);
-    if (started !== undefined) {
-      const deltaMs = Math.round(performance.now() - started);
-      if (deltaMs < 5000) {
-        console.log(`[voice] ${name}: speaking->audio delta ${deltaMs} ms` +
-                    (packets === 1 ? " (first packet of the stream)" : ""));
+  // prism's OpusDecoder is a Transform stream: ONE bad packet (loss, or a
+  // stale frame from before a DAVE transition) emits 'error' and puts the
+  // stream into a permanently failed state — every packet after it would be
+  // silently dropped and the speaker would never transcribe again. So on
+  // error we swap in a fresh decoder; a good packet resets the streak, and
+  // a long streak means the DAVE key state itself is bad → resubscribe.
+  const wireDecoder = () => {
+    const decoder = new prism.opus.Decoder({
+      rate: 48000, channels: 2, frameSize: 960,
+    });
+    subscriptions.get(userId).decoder = decoder;
+    decoder.on("error", (e) => {
+      consecutiveErrors++;
+      if (consecutiveErrors <= 3 || consecutiveErrors % 100 === 0) {
+        console.log(`[voice] ${name} decode ERROR #${consecutiveErrors}: ` +
+                    `${e.message || e} — swapping decoder`);
       }
-      speakingStart.delete(userId);
-    }
-    streamAcc.feed(uid, label, toMono16k(pcm), sendFrame);
-  });
-  stream.pipe(decoder);
+      try { decoder.destroy(); } catch { /* already gone */ }
+      if (consecutiveErrors >= 100) {
+        console.log(`[voice] ${name}: ${consecutiveErrors} consecutive ` +
+                    "failures — DAVE key likely desynced, resubscribing");
+        consecutiveErrors = 0;
+        setImmediate(() => {
+          unsubscribeUser(userId);
+          subscribeUser(connection, userId);
+        });
+        return;
+      }
+      setImmediate(wireDecoder);
+    });
+    decoder.on("data", (pcm) => {
+      consecutiveErrors = 0;
+      packets++;
+      const started = speakingStart.get(userId);
+      if (started !== undefined) {
+        const deltaMs = Math.round(performance.now() - started);
+        if (deltaMs < 5000) {
+          console.log(`[voice] ${name}: speaking->audio delta ${deltaMs} ms` +
+                      (packets === 1 ? " (first packet of the stream)" : ""));
+        }
+        speakingStart.delete(userId);
+      }
+      streamAcc.feed(uid, label, toMono16k(pcm), sendFrame);
+    });
+    stream.pipe(decoder);
+  };
+  wireDecoder();
 }
 
 function unsubscribeUser(userId) {
